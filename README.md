@@ -50,7 +50,7 @@ sudo pacman -S rust              # only needed to build from source
 ### From source
 
 ```bash
-git clone https://github.com/yourusername/pacselect.git
+git clone https://github.com/ryansinn/pacselect.git
 cd pacselect
 cargo build --release
 sudo cp target/release/pacselect /usr/local/bin/
@@ -59,7 +59,7 @@ sudo cp target/release/pacselect /usr/local/bin/
 ### Using the PKGBUILD (local)
 
 ```bash
-git clone https://github.com/yourusername/pacselect.git
+git clone https://github.com/ryansinn/pacselect.git
 cd pacselect
 makepkg -si
 ```
@@ -68,7 +68,7 @@ This builds, runs tests, and installs via pacman so it is tracked and removable 
 
 ### Pre-built binary
 
-Download the `pacselect` binary from the [Releases](https://github.com/yourusername/pacselect/releases) page and copy it to `/usr/local/bin/`.
+Download the `pacselect` binary from the [Releases](https://github.com/ryansinn/pacselect/releases) page and copy it to `/usr/local/bin/`.
 
 ---
 
