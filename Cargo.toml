@@ -1,0 +1,21 @@
+[package]
+name = "pacselect"
+version = "0.1.0"
+edition = "2021"
+description = "Selective pacman updater — safely updates apps without touching system/core packages"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/yourusername/pacselect"
+
+[[bin]]
+name = "pacselect"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+colored = "2"
+dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
