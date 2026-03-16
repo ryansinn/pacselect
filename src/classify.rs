@@ -10,6 +10,9 @@ pub enum SkipReason {
     /// minor version line (e.g. 6.23 → 6.24). Defer until a full KDE upgrade.
     KdeVersionBump { from: String, to: String },
     UserFilter(String),
+    /// Installing this package would cause a partial upgrade: it depends on
+    /// one or more packages that are being skipped this run.
+    PartialUpgrade { needs: Vec<String> },
 }
 
 impl std::fmt::Display for SkipReason {
@@ -21,6 +24,9 @@ impl std::fmt::Display for SkipReason {
                 write!(f, "KDE version bump {} → {}", from, to)
             }
             SkipReason::UserFilter(pat) => write!(f, "user filter: {}", pat),
+            SkipReason::PartialUpgrade { needs } => {
+                write!(f, "partial upgrade risk — needs skipped: {}", needs.join(", "))
+            }
         }
     }
 }

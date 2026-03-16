@@ -1,6 +1,6 @@
 # Maintainer: Ryan <your@email.com>
 pkgname=pacselect
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Selective pacman updater — safely updates apps without touching system/core or KDE session packages"
 arch=('x86_64' 'aarch64')

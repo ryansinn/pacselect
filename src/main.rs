@@ -201,13 +201,26 @@ fn main() -> Result<()> {
     let safe_names: Vec<&str> = safe.iter().map(|u| u.name.as_str()).collect();
     let dep_warnings = depcheck::warnings_map(depcheck::check(&safe_names, &skipped_names));
 
+    // Move any safe package that depends on a skipped package into skipped.
+    // Installing it alone would be a partial upgrade — block it entirely.
+    {
+        let mut i = 0;
+        while i < safe.len() {
+            if let Some(needs) = dep_warnings.get(safe[i].name.as_str()) {
+                let update = safe.remove(i);
+                skipped.push((update, SkipReason::PartialUpgrade { needs: needs.clone() }));
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     // ── JSON output path ─────────────────────────────────────────────────────
     if cli.json {
         print_json(
             &env,
             &safe,
             &skipped,
-            &dep_warnings,
             &foreign,
         );
         // JSON implies dry-run — log it and exit
@@ -235,16 +248,25 @@ fn main() -> Result<()> {
         .iter()
         .filter(|(_, r)| matches!(r, SkipReason::UserFilter(_)))
         .count();
+    let n_partial = skipped
+        .iter()
+        .filter(|(_, r)| matches!(r, SkipReason::PartialUpgrade { .. }))
+        .count();
 
     println!();
     let bar = "─".repeat(62);
     println!("{}", bar.dimmed());
+    let partial_note = if n_partial > 0 {
+        format!("  partial: {}", n_partial)
+    } else {
+        String::new()
+    };
     println!(
         "  {}  {}    {} skipped  {}",
         "Safe to install:".green().bold(),
         safe.len().to_string().green().bold(),
         skipped.len().to_string().yellow(),
-        format!("(system: {}  kde: {}  user: {})", n_sys, n_kde, n_usr).dimmed()
+        format!("(system: {}  kde: {}  user: {}{})", n_sys, n_kde, n_usr, partial_note).dimmed()
     );
     println!("{}", bar.dimmed());
 
@@ -267,50 +289,13 @@ fn main() -> Result<()> {
         } else {
             String::new()
         };
-        let dep_warn = if dep_warnings.contains_key(&u.name) {
-            format!(
-                " {}",
-                format!(
-                    "⚠ needs skipped: {}",
-                    dep_warnings[&u.name].join(", ")
-                )
-                .yellow()
-            )
-        } else {
-            String::new()
-        };
         println!(
-            "  {:<35} {} → {}{}{}",
+            "  {:<35} {} → {}{}",
             u.name.green(),
             u.old_version.dimmed(),
             u.new_version.cyan(),
             aur_tag,
-            dep_warn,
         );
-    }
-
-    // ── Dep warnings summary ─────────────────────────────────────────────────
-    if !dep_warnings.is_empty() {
-        println!();
-        println!(
-            "{}",
-            "⚠  Partial upgrade warnings:".yellow().bold()
-        );
-        println!(
-            "{}",
-            "   The following packages depend on skipped packages.".dimmed()
-        );
-        println!(
-            "{}",
-            "   Installing them now may cause library mismatches.".dimmed()
-        );
-        for (pkg, deps) in &dep_warnings {
-            println!(
-                "   {} → needs: {}",
-                pkg.yellow(),
-                deps.join(", ").red()
-            );
-        }
     }
 
     // Show skipped names compactly when not in verbose mode
@@ -372,7 +357,6 @@ struct JsonOutput<'a> {
     kde_frameworks: Option<&'a str>,
     safe: Vec<JsonPackage<'a>>,
     skipped: Vec<JsonSkipped<'a>>,
-    dep_warnings: Vec<JsonDepWarning<'a>>,
 }
 
 #[derive(Serialize)]
@@ -381,7 +365,6 @@ struct JsonPackage<'a> {
     old: &'a str,
     new: &'a str,
     aur: bool,
-    dep_warning: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -393,17 +376,10 @@ struct JsonSkipped<'a> {
     aur: bool,
 }
 
-#[derive(Serialize)]
-struct JsonDepWarning<'a> {
-    package: &'a str,
-    depends_on_skipped: &'a [String],
-}
-
 fn print_json(
     env: &environment::SystemEnv,
     safe: &[&PackageUpdate],
     skipped: &[(&PackageUpdate, SkipReason)],
-    dep_warnings: &std::collections::HashMap<String, Vec<String>>,
     foreign: &std::collections::HashSet<String>,
 ) {
     let safe_json: Vec<JsonPackage> = safe
@@ -413,7 +389,6 @@ fn print_json(
             old: &u.old_version,
             new: &u.new_version,
             aur: foreign.contains(&u.name.to_lowercase()),
-            dep_warning: dep_warnings.get(&u.name).cloned(),
         })
         .collect();
 
@@ -428,20 +403,11 @@ fn print_json(
         })
         .collect();
 
-    let dep_json: Vec<JsonDepWarning> = dep_warnings
-        .iter()
-        .map(|(pkg, deps)| JsonDepWarning {
-            package: pkg.as_str(),
-            depends_on_skipped: deps.as_slice(),
-        })
-        .collect();
-
     let out = JsonOutput {
         desktop: env.desktop.as_deref(),
         kde_frameworks: env.kde_frameworks_minor.as_deref(),
         safe: safe_json,
         skipped: skipped_json,
-        dep_warnings: dep_json,
     };
 
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());

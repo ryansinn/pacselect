@@ -31,7 +31,7 @@ pacSelect separates these automatically. You get the app updates immediately; th
 | **KDE core filter** | Unconditionally blocks session-critical packages: `kwin`, `plasma-*`, `sddm`, `kscreenlocker`, etc. |
 | **KDE version-bump detection** | Detects the installed KDE Frameworks version at runtime (`pacman -Q kcoreaddons`) and skips *any* KDE ecosystem package moving to a new minor release line (e.g. 6.23 → 6.24) |
 | **AUR labelling** | Runs `pacman -Qm` to flag foreign/AUR packages in output and JSON |
-| **Dependency safety check** | After classifying, runs `pacman -Si` against safe packages to warn if any depend on a skipped package (partial upgrade risk) |
+| **Dependency safety check** | After classifying, runs `pacman -Si` against safe packages; any that depend on a skipped package are **blocked** (moved to skipped) to prevent partial upgrades |
 | **History log** | Appends every run to `~/.local/share/pacselect/history.log` |
 | **JSON output** | `--json` emits machine-readable output — designed as the backend for a future KDE system-tray app |
 | **User filter patterns** | Config file or `--skip` flag to permanently exclude extra packages, with glob support |
@@ -185,13 +185,18 @@ Any package in the KDE ecosystem whose update moves from that minor line to a ne
 
 Before displaying the install list, pacSelect syncs the pacman sync database (`sudo pacman -Sy`) and then queries `pacman -Si` for all safe packages to check their runtime dependencies.
 
-If a safe package depends on a skipped package, a warning is shown inline:
+If a safe package depends on a skipped package, it is **blocked** and moved into the skipped list rather than installed:
 
 ```
-  firefox                             120.0-1 → 121.0-1  ⚠ needs skipped: nss
+  SKIP  firefox                        120.0-1 → 121.0-1
+        (partial upgrade risk — needs skipped: nss)
 ```
 
-And a summary block is shown before the confirmation prompt. This is advisory — you still choose whether to proceed.
+This prevents partial upgrades entirely. The summary bar reflects the count:
+
+```
+  Safe to install: 4    17 skipped  (system: 12  kde: 4  user: 0  partial: 1)
+```
 
 ---
 
@@ -208,8 +213,7 @@ And a summary block is shown before the confirmation prompt. This is advisory �
       "name": "firefox",
       "old": "120.0-1",
       "new": "121.0-1",
-      "aur": false,
-      "dep_warning": null
+      "aur": false
     }
   ],
   "skipped": [
@@ -226,9 +230,15 @@ And a summary block is shown before the confirmation prompt. This is advisory �
       "new": "6.24.0-1.1",
       "reason": "KDE version bump 6.23 → 6.24",
       "aur": false
+    },
+    {
+      "name": "firefox",
+      "old": "120.0-1",
+      "new": "121.0-1",
+      "reason": "partial upgrade risk — needs skipped: nss",
+      "aur": false
     }
-  ],
-  "dep_warnings": []
+  ]
 }
 ```
 
