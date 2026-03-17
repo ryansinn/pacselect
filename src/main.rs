@@ -66,6 +66,12 @@ struct Cli {
     /// Print a sample config file to stdout and exit
     #[arg(long)]
     gen_config: bool,
+
+    /// Bypass all filters and run a full system upgrade (pacman -Syu).
+    /// Use this periodically to apply deferred system/core and KDE updates.
+    /// This is the Arch-recommended upgrade path and avoids partial upgrades.
+    #[arg(long)]
+    full_upgrade: bool,
 }
 
 fn main() -> Result<()> {
@@ -115,6 +121,32 @@ fn main() -> Result<()> {
 
     let filter_system = !cli.no_system_filter && cfg.filter_sets.system_core;
     let filter_kde = !cli.no_kde_filter && cfg.filter_sets.kde_core;
+
+    // ── Full upgrade path ────────────────────────────────────────────────────
+    if cli.full_upgrade {
+        println!(
+            "{}",
+            "Full upgrade mode — all filters disabled (pacman -Syu)."
+                .cyan()
+                .bold()
+        );
+        if !cli.yes {
+            print!("\n{}", "Proceed with full system upgrade? [y/N] ".bold());
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                println!("{}", "Aborted.".red());
+                return Ok(());
+            }
+        }
+        install::full_upgrade()?;
+        println!(
+            "\n{}",
+            "✓ Full system upgrade complete.".green().bold()
+        );
+        return Ok(());
+    }
 
     // ── Fetch pending updates ────────────────────────────────────────────────
     println!("{}", "Checking for updates...".cyan().bold());
@@ -199,6 +231,15 @@ fn main() -> Result<()> {
         .map(|(u, _)| u.name.to_lowercase())
         .collect();
     let safe_names: Vec<&str> = safe.iter().map(|u| u.name.as_str()).collect();
+
+    // Sync the package DB exactly once here — before both the dep-check query
+    // (pacman -Si) and the install step.  Placing the sync here, rather than
+    // inside install_packages, prevents the partial-upgrade anti-pattern:
+    // a `-Sy` inside the install command would re-sync the DB mid-flight and
+    // could let pacman pull in newer library versions that break packages we
+    // have intentionally deferred.
+    // See: https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported
+    depcheck::sync_db();
     let dep_warnings = depcheck::warnings_map(depcheck::check(&safe_names, &skipped_names));
 
     // Move any safe package that depends on a skipped package into skipped.
@@ -274,7 +315,7 @@ fn main() -> Result<()> {
         println!(
             "\n{}\n{}",
             "No safe application updates available.".yellow(),
-            "Run 'sudo pacman -Syu' for a full system upgrade.".dimmed()
+            "Run 'pacselect --full-upgrade' or 'sudo pacman -Syu' for a full system upgrade.".dimmed()
         );
         let skipped_names_vec: Vec<&str> = skipped.iter().map(|(u, _)| u.name.as_str()).collect();
         let _ = log::write_run(&[], &skipped_names_vec, false, false);
@@ -346,6 +387,22 @@ fn main() -> Result<()> {
         "✓".green().bold(),
         safe.len()
     );
+
+    // Nudge the user toward a full upgrade when system/core packages are
+    // accumulating.  Partial upgrades become riskier the longer they drift.
+    if n_sys + n_kde > 0 {
+        println!(
+            "  {}",
+            format!(
+                "Note: {} deferred system/core package(s) pending — run \
+                 'pacselect --full-upgrade' or 'sudo pacman -Syu' periodically \
+                 to avoid partial-upgrade drift.",
+                n_sys + n_kde
+            )
+            .dimmed()
+        );
+    }
+
     Ok(())
 }
 

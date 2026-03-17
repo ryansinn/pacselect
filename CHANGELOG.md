@@ -7,6 +7,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] — 2026-03-16
+
+### Fixed
+
+- **Eliminated `pacman -Sy <packages>` partial-upgrade antipattern** — `install_packages`
+  previously passed `-y` to pacman, which re-synced the live database just before installing
+  the selected subset of packages. This is exactly the scenario the
+  [Arch wiki §3.3](https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported)
+  warns against: a mid-flight DB sync can expose newer shared library versions while leaving
+  unselected packages on the old versions, silently creating a partially-upgraded system.
+  The `-y` flag has been removed from `install_packages`; the single authoritative DB sync
+  now happens earlier in the main flow via `depcheck::sync_db()`, before both the
+  `pacman -Si` dependency query and the install step.
+
+### Added
+
+- **`--full-upgrade` flag** — runs `sudo pacman -Syu`, the Arch-recommended full upgrade path.
+  Use this periodically to apply deferred system/core and KDE packages and prevent
+  partial-upgrade drift from accumulating. Respects `--yes` to skip the confirmation prompt.
+- **Post-install nudge** — after a successful selective install, if any system/core or KDE
+  packages remain deferred, pacSelect prints a reminder to run `--full-upgrade` or
+  `sudo pacman -Syu` periodically.
+- **`depcheck::sync_db` is now `pub`** — allows callers to control the sync lifecycle
+  explicitly rather than having it buried inside `check()`.
+
+---
+
 ## [0.2.0] — 2026-03-16
 
 ### Changed

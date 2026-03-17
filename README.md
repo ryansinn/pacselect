@@ -99,6 +99,9 @@ pacselect --skip "spotify" --skip "proprietary-*"
 # Machine-readable JSON output (implies dry-run)
 pacselect --json
 
+# Full system upgrade — includes deferred system/core and KDE packages
+pacselect --full-upgrade
+
 # Print all built-in filter patterns
 pacselect --list-filters
 
@@ -117,6 +120,7 @@ pacselect --gen-config > ~/.config/pacselect/config.toml
 | `--skip PATTERN` | | Extra glob pattern to always skip; repeatable |
 | `--no-system-filter` | | Disable the system/core filter *(dangerous)* |
 | `--no-kde-filter` | | Disable KDE core + version-bump filters |
+| `--full-upgrade` | | Run `pacman -Syu` — full upgrade, all filters bypassed |
 | `--config PATH` | | Use an alternate config file |
 | `--list-filters` | | Print all built-in blocked patterns and exit |
 | `--gen-config` | | Print a sample config file to stdout and exit |
@@ -183,7 +187,7 @@ Any package in the KDE ecosystem whose update moves from that minor line to a ne
 
 ## Dependency safety check
 
-Before displaying the install list, pacSelect syncs the pacman sync database (`sudo pacman -Sy`) and then queries `pacman -Si` for all safe packages to check their runtime dependencies.
+Before displaying the install list, pacSelect syncs the pacman sync database once (`sudo pacman -Sy`) and then queries `pacman -Si` for all safe packages to check their runtime dependencies. The sync happens **before** both the dependency query and the install step — the install command itself does not re-sync the database. This matches the [Arch Linux guidance](https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported) to never run `pacman -Sy <packages>` without a full `-u`, since a mid-flight sync can expose newer library versions and create partial-upgrade breakage for deferred packages.
 
 If a safe package depends on a skipped package, it is **blocked** and moved into the skipped list rather than installed:
 

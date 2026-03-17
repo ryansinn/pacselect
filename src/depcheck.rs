@@ -8,14 +8,18 @@ pub struct DepWarning {
     pub depends_on_skipped: Vec<String>,
 }
 
-/// Refresh the pacman sync database so that `pacman -Si` reflects the same
-/// package metadata used by `checkupdates`.  Runs `sudo pacman -Sy` with no
+/// Refresh the pacman sync database.  Runs `sudo pacman -Sy` with no
 /// packages to install — purely a database sync.
 ///
-/// We swallow errors here: if the sync fails (e.g. offline, no sudo) we still
-/// proceed with the dep check against whatever is already cached.  The dep
-/// check is advisory, not a hard gate.
-fn sync_db() {
+/// Must be called **once** from `main` before both the dependency check and
+/// the install step.  Keeping it here (rather than inside `install_packages`)
+/// ensures the DB is current for `pacman -Si` queries while avoiding the
+/// partial-upgrade anti-pattern: we sync once, then install the exact set of
+/// packages determined safe — we do NOT pass `-y` to the install command.
+///
+/// Errors are swallowed: if the sync fails (e.g. offline, no sudo) we still
+/// proceed using whatever is already cached.  The dep check is advisory.
+pub fn sync_db() {
     let _ = Command::new("sudo")
         .arg("pacman")
         .arg("-Sy")
@@ -28,13 +32,15 @@ fn sync_db() {
 ///
 /// Refreshes the sync db first so the metadata is current, then uses
 /// `pacman -Si <pkgs…>` to query dependency info in a single call.
+/// For each safe package, check whether any of its runtime dependencies are
+/// in the skipped set.  If so, installing it alone risks a partial upgrade.
+///
+/// The caller is responsible for calling [`sync_db`] before this function so
+/// that `pacman -Si` metadata is current.
 pub fn check(safe: &[&str], skipped_names: &HashSet<String>) -> Vec<DepWarning> {
     if safe.is_empty() || skipped_names.is_empty() {
         return Vec::new();
     }
-
-    // Ensure the sync db is current before querying metadata.
-    sync_db();
 
     // Fetch the sync-db info for all safe packages at once.
     let output = match Command::new("pacman")
