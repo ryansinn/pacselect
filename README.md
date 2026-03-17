@@ -2,7 +2,7 @@
 
 > **Smart app updates. Stable system.**
 
-pacSelect is a selective `pacman` updater for Arch-based systems (CachyOS, EndeavourOS, Manjaro, plain Arch). It updates your apps — browsers, terminals, media players, dev tools — while automatically skipping packages that would require a reboot, log-out, or risk breaking your running session.
+pacSelect is a selective, session‑safe updater for Arch‑based systems including CachyOS, EndeavourOS, Manjaro, and plain Arch. It updates everyday applications like browsers, terminals, media players, and development tools while skipping kernel, KDE, and other system‑critical packages that would require a reboot or log‑out to apply safely.
 
 Normal `pacman -Syu` is great for intentional full upgrades. pacSelect is for everything in between: staying current on applications daily without touching the kernel, drivers, Plasma session, or systemd.
 

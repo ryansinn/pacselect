@@ -1,4 +1,4 @@
-# Maintainer: Ryan <your@email.com>
+# Maintainer: Ryan Sinn <pacselect@ryansinn.com>
 pkgname=pacselect
 pkgver=0.3.0
 pkgrel=1
