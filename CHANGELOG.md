@@ -7,6 +7,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.0] — 2026-03-18
+
+### Added
+
+- **AUR update detection** — queries `paru` or `yay` (whichever is installed)
+  for AUR-only pending updates via `-Qua` and merges them with the official
+  `checkupdates` results. This means AUR packages like `pacselect` itself now
+  surface in the update list even when no official-repo updates are pending.
+- **Segmented AUR package list** — AUR updates that pass all filters are
+  displayed in a separate `── AUR packages ──` section below the official
+  package list, with a hint to run the detected AUR helper to install them.
+  AUR packages are not passed to `pacman` for installation.
+- **AUR filter parity** — AUR-installed packages (including an AUR-built
+  `mesa`, GPU driver, or any other foreign package) pass through all the same
+  name-pattern, group, and dependency filters as official packages. Filtering
+  is based on package name and pacman group, not package origin.
+- **Self-update check** — at startup, if a newer version of `pacselect` is
+  available from the AUR, a prominent warning is shown and the user is offered
+  the choice to update pacselect first (via the detected AUR helper) before
+  proceeding. Disable with `--no-self-update` or `behavior.self_update_check = false`.
+- **`--no-self-update` flag** — suppresses the self-update check for this run.
+- **`behavior.self_update_check`** config key (default `true`) — persistent
+  opt-out of the self-update check.
+
+---
+
 ## [0.4.0] — 2026-03-18
 
 ### Added

@@ -62,3 +62,22 @@ pub fn full_upgrade() -> Result<()> {
 
     Ok(())
 }
+
+/// Update pacselect itself via the given AUR helper.
+pub fn self_update_via_helper(helper: &str) -> Result<()> {
+    let status = Command::new(helper)
+        .args(["-S", "--noconfirm", "pacselect"])
+        .status()
+        .with_context(|| format!("Failed to launch '{}'", helper))?;
+
+    if !status.success() {
+        bail!(
+            "{} exited with non-zero status ({}). \
+             Check the output above for details.",
+            helper,
+            status
+        );
+    }
+
+    Ok(())
+}

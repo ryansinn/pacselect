@@ -33,7 +33,9 @@ pacSelect separates these automatically. You get the app updates immediately; th
 | **KDE version-bump detection** | Detects the installed KDE Frameworks version at runtime and skips *any* KDE ecosystem package moving to a new minor release line (e.g. 6.23 → 6.24) |
 | **Group-based safety net** | After name-pattern classification, runs a single `pacman -Si` over all safe packages and demotes any whose pacman group (e.g. `xorg`, `plasma`, `base`) implies system membership |
 | **Package descriptions** | Shows a short description from `pacman -Si` below each safe package — no extra process calls |
-| **AUR labelling** | Runs `pacman -Qm` to flag foreign/AUR packages in output and JSON |
+| **AUR updates** | Queries `paru` or `yay` (if installed) for AUR-only pending updates; displayed in a separate section in the update list |
+| **AUR filtering** | AUR-installed packages (including an AUR-built `mesa`, GPU driver, or any other foreign package) pass through all the same name-pattern, group, and dependency filters as official packages — filtering is based on package name and group, not package origin |
+| **Self-update check** | At startup, warns if pacselect itself has a pending AUR update and offers to install it via your AUR helper before proceeding |
 | **Dependency safety check** | Reuses the same `pacman -Si` batch; any safe package that depends on a skipped package is **blocked** to prevent partial upgrades |
 | **Grouped skipped display** | Deferred packages are shown grouped by category (`system`, `graphics`, `kde`, `user`, `partial`) so you can see at a glance what part of the system is held back |
 | **History log** | Appends every run to `~/.local/share/pacselect/history.log` |
@@ -128,6 +130,7 @@ pacselect --gen-config > ~/.config/pacselect/config.toml
 | `--no-system-filter` | | Disable the system/core filter *(dangerous)* |
 | `--no-kde-filter` | | Disable KDE core + version-bump filters |
 | `--full-upgrade` | | Run `pacman -Syu` — full upgrade, all filters bypassed |
+| `--no-self-update` | | Don't check for a pacselect update on startup |
 | `--config PATH` | | Use an alternate config file |
 | `--list-filters` | | Print all built-in blocked patterns and exit |
 | `--gen-config` | | Print a sample config file to stdout and exit |
@@ -179,6 +182,10 @@ auto_confirm = false
 
 # Never install, only show what would happen (same as --dry-run)
 dry_run = false
+
+# Check for a pacselect update on startup and offer to install it first.
+# Disable with --no-self-update.
+self_update_check = true
 ```
 
 All CLI flags take precedence over config values when both are set.

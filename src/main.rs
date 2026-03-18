@@ -82,6 +82,10 @@ struct Cli {
     /// This is the Arch-recommended upgrade path and avoids partial upgrades.
     #[arg(long)]
     full_upgrade: bool,
+
+    /// Don't check for a pacselect update on startup
+    #[arg(long)]
+    no_self_update: bool,
 }
 
 fn main() -> Result<()> {
@@ -154,6 +158,7 @@ fn main() -> Result<()> {
     let verbose = cli.verbose || cfg.display.verbose;
     let dry_run = cli.dry_run || cfg.behavior.dry_run;
     let yes = cli.yes || cfg.behavior.auto_confirm;
+    let self_update_check = !cli.no_self_update && cfg.behavior.self_update_check;
 
     // ── Full upgrade path ────────────────────────────────────────────────────
     if cli.full_upgrade {
@@ -184,8 +189,9 @@ fn main() -> Result<()> {
     println!("{}", "Checking for updates...".cyan().bold());
 
     let pending = updates::get_pending_updates()?;
+    let aur_helper = pending.aur_helper;
 
-    if pending.is_empty() {
+    if pending.all.is_empty() {
         println!("{}", "✓ System is up to date.".green());
         return Ok(());
     }
@@ -193,7 +199,7 @@ fn main() -> Result<()> {
     println!(
         "{} {} pending update(s) found",
         "→".cyan(),
-        pending.len().to_string().bold()
+        pending.all.len().to_string().bold()
     );
 
     if verbose {
@@ -203,11 +209,57 @@ fn main() -> Result<()> {
     // ── Detect AUR / foreign packages ───────────────────────────────────────
     let foreign = aur::foreign_packages();
 
+    // ── Self-update check ────────────────────────────────────────────────────
+    if self_update_check {
+        if let Some(u) = pending.all.iter().find(|u| u.name == "pacselect") {
+            if pending.aur_names.contains("pacselect") {
+                println!(
+                    "  {} {}",
+                    "⚠".yellow().bold(),
+                    format!(
+                        "pacselect has an update available ({} → {})",
+                        u.old_version, u.new_version
+                    )
+                    .yellow()
+                    .bold()
+                );
+                println!(
+                    "  {}",
+                    "Running an outdated version may produce incorrect filter decisions."
+                        .dimmed()
+                );
+                match aur_helper {
+                    Some(h) => {
+                        print!("\n  {}", "Update pacselect now? [y/N] ".bold());
+                        io::stdout().flush()?;
+                        let mut input = String::new();
+                        io::stdin().read_line(&mut input)?;
+                        if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                            install::self_update_via_helper(h)?;
+                            println!(
+                                "\n{}  {}",
+                                "✓ pacselect updated.".green().bold(),
+                                "Re-run pacselect to apply your pending updates.".dimmed()
+                            );
+                            return Ok(());
+                        }
+                    }
+                    None => println!(
+                        "  {}",
+                        "No AUR helper found — update manually: paru -S pacselect"
+                            .dimmed()
+                    ),
+                }
+                println!();
+            }
+        }
+    }
+
     // ── Classify ────────────────────────────────────────────────────────────
     let mut safe: Vec<&PackageUpdate> = Vec::new();
     let mut skipped: Vec<(&PackageUpdate, SkipReason)> = Vec::new();
 
-    for update in &pending {
+    for update in &pending.all {
         match classify::classify(
             &update.name,
             &update.old_version,
@@ -447,25 +499,44 @@ fn main() -> Result<()> {
     }
 
     // ── Package list ─────────────────────────────────────────────────────────
+    // Partition safe into official repo packages and AUR packages.
+    let safe_official: Vec<&PackageUpdate> = safe.iter().copied()
+        .filter(|u| !pending.aur_names.contains(&u.name))
+        .collect();
+    let safe_aur: Vec<&PackageUpdate> = safe.iter().copied()
+        .filter(|u| pending.aur_names.contains(&u.name))
+        .collect();
+
     println!("\n{}", "Packages that will be updated:".bold());
-    for u in &safe {
-        let aur_tag = if foreign.contains(&u.name.to_lowercase()) {
-            format!(" {}", "[AUR]".dimmed())
-        } else {
-            String::new()
-        };
+    for u in &safe_official {
         println!(
-            "  {:<35} {} → {}{}",
+            "  {:<35} {} → {}",
             u.name.green(),
             u.old_version.dimmed(),
             u.new_version.cyan(),
-            aur_tag,
         );
         if let Some(desc) = descriptions.get(u.name.as_str()) {
             if show_descriptions {
                 println!("     {}", desc.dimmed());
             }
         }
+    }
+
+    if !safe_aur.is_empty() {
+        println!("\n  {}", "── AUR packages ──".bold());
+        for u in &safe_aur {
+            println!(
+                "  {:<35} {} → {}",
+                u.name.cyan(),
+                u.old_version.dimmed(),
+                u.new_version.cyan(),
+            );
+        }
+        let aur_install_hint = match aur_helper {
+            Some(h) => format!("run '{}' to update these", h),
+            None    => "no AUR helper found — update these manually".to_string(),
+        };
+        println!("  {}", aur_install_hint.dimmed());
     }
 
     // Show skipped names compactly grouped by reason when not in verbose mode
@@ -502,7 +573,8 @@ fn main() -> Result<()> {
     }
 
     // ── Install ──────────────────────────────────────────────────────────────
-    let package_names: Vec<&str> = safe.iter().map(|u| u.name.as_str()).collect();
+    // AUR packages cannot be installed via pacman; install official ones only.
+    let package_names: Vec<&str> = safe_official.iter().map(|u| u.name.as_str()).collect();
     install::install_packages(&package_names)?;
 
     let skipped_names_vec: Vec<&str> = skipped.iter().map(|(u, _)| u.name.as_str()).collect();
@@ -511,8 +583,27 @@ fn main() -> Result<()> {
     println!(
         "\n{} {} package(s) updated.",
         "✓".green().bold(),
-        safe.len()
+        package_names.len()
     );
+
+    if !safe_aur.is_empty() {
+        let aur_pkg_names: Vec<&str> = safe_aur.iter().map(|u| u.name.as_str()).collect();
+        match aur_helper {
+            Some(h) => println!(
+                "  {} {} AUR package(s) — run '{}' to update: {}",
+                "→".cyan(),
+                aur_pkg_names.len(),
+                h,
+                aur_pkg_names.join("  ").cyan()
+            ),
+            None => println!(
+                "  {} {} AUR package(s) need manual update (no AUR helper found): {}",
+                "→".cyan(),
+                aur_pkg_names.len(),
+                aur_pkg_names.join("  ").cyan()
+            ),
+        }
+    }
 
     // Nudge the user toward a full upgrade when system/core packages are
     // accumulating.  Partial upgrades become riskier the longer they drift.

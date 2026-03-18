@@ -1,6 +1,6 @@
 # Maintainer: Ryan Sinn <pacselect@ryansinn.com>
 pkgname=pacselect
-pkgver=0.4.0
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Selective pacman updater — safely updates apps without touching system/core or KDE session packages"
 arch=('x86_64' 'aarch64')

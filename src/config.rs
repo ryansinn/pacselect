@@ -72,7 +72,7 @@ impl Default for DisplayConfig {
 }
 
 /// Behavioural defaults.
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BehaviorConfig {
     /// Skip the confirmation prompt and install immediately.
     /// Default: false. Override with --yes / -y.
@@ -83,6 +83,21 @@ pub struct BehaviorConfig {
     /// Default: false. Override with --dry-run / -n.
     #[serde(default)]
     pub dry_run: bool,
+
+    /// Check for a pacselect update on startup and offer to install it.
+    /// Default: true. Override with --no-self-update.
+    #[serde(default = "default_true")]
+    pub self_update_check: bool,
+}
+
+impl Default for BehaviorConfig {
+    fn default() -> Self {
+        Self {
+            auto_confirm: false,
+            dry_run: false,
+            self_update_check: true,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -142,5 +157,9 @@ auto_confirm = false
 # Show what would be updated without installing anything.
 # Equivalent to --dry-run / -n.
 dry_run = false
+
+# Check for a pacselect update on startup and offer to install it first.
+# Equivalent to --no-self-update (to disable).
+self_update_check = true
 "#
 }
