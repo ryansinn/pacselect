@@ -65,41 +65,6 @@ pub const SYSTEM_CORE_PATTERNS: &[&str] = &[
     "polkit",
     "kmod",
 
-    // ── Graphics stack ──────────────────────────────────────────────────────
-    "mesa",
-    "lib32-mesa",
-    "libglvnd",
-    "lib32-libglvnd",
-    "vulkan-icd-loader",
-    "lib32-vulkan-icd-loader",
-    "xorg-server",
-    "xorg-server-*",
-    "xorg-xwayland",
-    "wayland",
-    "wayland-protocols",
-
-    // GPU drivers (require display-server restart to take effect)
-    "nvidia",
-    "nvidia-dkms",
-    "nvidia-utils",
-    "lib32-nvidia-utils",
-    "nvidia-settings",
-    "nvidia-open",
-    "nvidia-open-dkms",
-    "amdvlk",
-    "lib32-amdvlk",
-    "vulkan-radeon",
-    "lib32-vulkan-radeon",
-    "vulkan-intel",
-    "lib32-vulkan-intel",
-    "intel-media-driver",
-    "libva-intel-driver",
-    "libva-mesa-driver",
-    "lib32-libva-mesa-driver",
-    "mesa-vdpau",
-    "lib32-mesa-vdpau",
-    "xf86-video-*",
-
     // ── Core widget toolkits ─────────────────────────────────────────────────
     // Updating these mid-session can affect Plasma and running Qt/GTK apps
     "qt6-base",
@@ -178,11 +143,6 @@ pub const SYSTEM_CORE_PATTERNS: &[&str] = &[
     "libinput",
     "xf86-input-*",
 
-    // ── Hardware discovery libs ──────────────────────────────────────────────
-    // GPU and PCIe subsystem libraries; updates require driver / X restart.
-    "libpciaccess",
-    "lib32-libpciaccess",
-
     // ── Storage / block layer ────────────────────────────────────────────────
     "lvm2",
     "device-mapper",
@@ -197,6 +157,78 @@ pub const SYSTEM_CORE_PATTERNS: &[&str] = &[
     "iana-etc",
     "icu",
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRAPHICS packages
+// Everything in the graphics stack: GPU drivers (Mesa, NVIDIA, AMD, Intel),
+// the OpenGL/Vulkan dispatch layer, and the display-server layer (Xorg,
+// Wayland).  All of these require a display-server or session restart to take
+// effect, and many packages within the stack must upgrade atomically.
+//
+// Layers covered:
+//   Kernel GPU   — DRM/KMS is in-kernel; libpciaccess bridges userspace to it
+//   Rendering    — Mesa (all sub-packages), vendor Vulkan ICDs
+//   Display srvr — Xorg, Xwayland, Wayland protocol, DDX drivers
+//   Dispatch     — libglvnd, vulkan-icd-loader (software, but ABI-coupled)
+// ─────────────────────────────────────────────────────────────────────────────
+pub const GRAPHICS_PATTERNS: &[&str] = &[
+    // ── Mesa (rendering layer — must all upgrade atomically) ─────────────────
+    "mesa",
+    "lib32-mesa",
+    "opencl-mesa",
+    "lib32-opencl-mesa",
+    "vulkan-mesa-*",            // vulkan-mesa-implicit-layers, vulkan-mesa-layers, …
+    "lib32-vulkan-mesa-*",
+    "libva-mesa-driver",
+    "lib32-libva-mesa-driver",
+    "mesa-vdpau",
+    "lib32-mesa-vdpau",
+
+    // ── NVIDIA (rendering layer) ─────────────────────────────────────────────
+    "nvidia",
+    "nvidia-dkms",
+    "nvidia-utils",
+    "lib32-nvidia-utils",
+    "nvidia-settings",
+    "nvidia-open",
+    "nvidia-open-dkms",
+
+    // ── AMD / Intel standalone drivers ──────────────────────────────────────
+    "amdvlk",
+    "lib32-amdvlk",
+    "vulkan-radeon",
+    "lib32-vulkan-radeon",
+    "vulkan-intel",
+    "lib32-vulkan-intel",
+    "intel-media-driver",
+    "libva-intel-driver",
+
+    // ── GL / Vulkan dispatch (software, ABI-coupled to drivers) ─────────────
+    "libglvnd",
+    "lib32-libglvnd",
+    "vulkan-icd-loader",
+    "lib32-vulkan-icd-loader",
+
+    // ── Display server layer ─────────────────────────────────────────────────
+    "xorg-server",
+    "xorg-server-*",
+    "xorg-xwayland",
+    "wayland",
+    "wayland-protocols",
+    "xf86-video-*",
+
+    // ── Kernel GPU userspace bridge ──────────────────────────────────────────
+    "libpciaccess",
+    "lib32-libpciaccess",
+];
+
+/// Returns `true` if `name` belongs to the graphics stack.
+pub fn is_graphics(name: &str) -> bool {
+    let name = name.to_lowercase();
+    GRAPHICS_PATTERNS
+        .iter()
+        .any(|&p| glob_match(&name, &p.to_lowercase()))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // KDE ECOSYSTEM patterns

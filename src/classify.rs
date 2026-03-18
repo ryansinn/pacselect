@@ -1,15 +1,22 @@
-use crate::filters::{glob_match, is_kde_ecosystem, KDE_CORE_PATTERNS, SYSTEM_CORE_PATTERNS};
+use crate::filters::{glob_match, is_graphics, is_kde_ecosystem, KDE_CORE_PATTERNS, SYSTEM_CORE_PATTERNS};
 use crate::environment::version_minor;
 
 /// Why a package update is being skipped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipReason {
+    /// Kernel, boot, glibc, systemd, audio, network, storage, etc.
     SystemCore,
+    /// Full graphics stack: GPU drivers (Mesa, NVIDIA, AMD, Intel), GL/Vulkan
+    /// dispatch, and the display-server layer (Xorg, Wayland).
+    Graphics,
     KdeCore,
     /// The package tracks the KDE release cycle and this update bumps the
     /// minor version line (e.g. 6.23 → 6.24). Defer until a full KDE upgrade.
     KdeVersionBump { from: String, to: String },
     UserFilter(String),
+    /// pacman reports this package belongs to a group that implies it is
+    /// part of a system/graphics/session layer (e.g. xorg, plasma, base).
+    GroupFilter(String),
     /// Installing this package would cause a partial upgrade: it depends on
     /// one or more packages that are being skipped this run.
     PartialUpgrade { needs: Vec<String> },
@@ -19,11 +26,13 @@ impl std::fmt::Display for SkipReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SkipReason::SystemCore => write!(f, "system/core"),
+            SkipReason::Graphics   => write!(f, "graphics"),
             SkipReason::KdeCore => write!(f, "KDE core (session-critical)"),
             SkipReason::KdeVersionBump { from, to } => {
                 write!(f, "KDE version bump {} → {}", from, to)
             }
             SkipReason::UserFilter(pat) => write!(f, "user filter: {}", pat),
+            SkipReason::GroupFilter(grp) => write!(f, "pacman group: {}", grp),
             SkipReason::PartialUpgrade { needs } => {
                 write!(f, "partial upgrade risk — needs skipped: {}", needs.join(", "))
             }
@@ -58,7 +67,12 @@ pub fn classify(
         }
     }
 
-    // 2. System / core
+    // 2. Graphics stack (GPU drivers, display server, dispatch libs)
+    if filter_system && is_graphics(&pkg) {
+        return Some(SkipReason::Graphics);
+    }
+
+    // 3. Remaining system / core
     if filter_system {
         for &pattern in SYSTEM_CORE_PATTERNS {
             if glob_match(&pkg, &pattern.to_lowercase()) {
@@ -67,7 +81,7 @@ pub fn classify(
         }
     }
 
-    // 3. KDE core (session-critical — always skip regardless of version)
+    // 5. KDE core (session-critical — always skip regardless of version)
     if filter_kde {
         for &pattern in KDE_CORE_PATTERNS {
             if glob_match(&pkg, &pattern.to_lowercase()) {
@@ -76,7 +90,7 @@ pub fn classify(
         }
     }
 
-    // 4. KDE version-bump detection
+    // 6. KDE version-bump detection
     //
     // If the package belongs to the KDE ecosystem AND its installed version
     // sits on the same minor line as the running KDE (e.g. 6.23.x), but the
@@ -180,6 +194,19 @@ mod tests {
     fn classify_safe() {
         let r = classify("firefox", "120.0-1", "121.0-1", &[], true, true, Some("6.23"));
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn classify_graphics() {
+        // Mesa sub-package should be caught as Graphics
+        let r = classify("opencl-mesa", "26.0.2-1", "26.0.3-1", &[], true, false, None);
+        assert_eq!(r, Some(SkipReason::Graphics));
+        // NVIDIA driver
+        let r2 = classify("nvidia-utils", "570.0-1", "571.0-1", &[], true, false, None);
+        assert_eq!(r2, Some(SkipReason::Graphics));
+        // Wayland display server
+        let r3 = classify("wayland", "1.22-1", "1.23-1", &[], true, false, None);
+        assert_eq!(r3, Some(SkipReason::Graphics));
     }
 
     #[test]

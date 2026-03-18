@@ -1,6 +1,21 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
+/// Pacman groups that indicate a package belongs to a system/graphics/session
+/// category and should be deferred rather than installed mid-session.
+/// This acts as a safety net on top of the name-pattern lists, catching
+/// packages the patterns might miss.
+const SYSTEM_GROUPS: &[&str] = &[
+    // Display server
+    "xorg",
+    "xorg-drivers",
+    // Core base
+    "base",
+    // Plasma session (display manager, compositor, etc.)
+    "plasma",
+    "plasma-wayland-session",
+];
+
 /// A safe package that depends on one or more skipped packages.
 #[derive(Debug)]
 pub struct DepWarning {
@@ -27,39 +42,57 @@ pub fn sync_db() {
         .status();
 }
 
-/// For each safe package, check whether any of its runtime dependencies are
-/// in the skipped set.  If so, installing it alone risks a partial upgrade.
-///
-/// Refreshes the sync db first so the metadata is current, then uses
-/// `pacman -Si <pkgs…>` to query dependency info in a single call.
-/// For each safe package, check whether any of its runtime dependencies are
-/// in the skipped set.  If so, installing it alone risks a partial upgrade.
-///
-/// The caller is responsible for calling [`sync_db`] before this function so
-/// that `pacman -Si` metadata is current.
-pub fn check(safe: &[&str], skipped_names: &HashSet<String>) -> Vec<DepWarning> {
-    if safe.is_empty() || skipped_names.is_empty() {
-        return Vec::new();
+/// The result of a single-pass `pacman -Si` query over all safe packages.
+pub struct SiResult {
+    /// Packages that depend on a skipped package (partial-upgrade risk).
+    pub dep_warnings: Vec<DepWarning>,
+    /// Packages whose pacman group implies they should be deferred.
+    /// Maps package name → the offending group name.
+    pub group_demotions: HashMap<String, String>,
+    /// Short description for each package, from the Description field.
+    pub descriptions: HashMap<String, String>,
+}
+
+/// Run a single `pacman -Si` over all safe packages and return both dep
+/// warnings and group-based demotions in one pass.
+pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
+    if safe.is_empty() {
+        return SiResult {
+            dep_warnings: Vec::new(),
+            group_demotions: HashMap::new(),
+            descriptions: HashMap::new(),
+        };
     }
 
-    // Fetch the sync-db info for all safe packages at once.
     let output = match Command::new("pacman")
         .arg("-Si")
         .args(safe)
         .output()
     {
         Ok(o) => o,
-        Err(_) => return Vec::new(),
+        Err(_) => return SiResult {
+            dep_warnings: Vec::new(),
+            group_demotions: HashMap::new(),
+            descriptions: HashMap::new(),
+        },
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_warnings(&stdout, skipped_names)
+    let dep_warnings = if skipped_names.is_empty() {
+        Vec::new()
+    } else {
+        parse_warnings(&stdout, skipped_names)
+    };
+    let group_demotions = parse_group_demotions(&stdout);
+    let descriptions = parse_descriptions(&stdout);
+    SiResult { dep_warnings, group_demotions, descriptions }
 }
 
 /// Parse `pacman -Si` output into a map of package → dep warnings.
 ///
 /// pacman -Si output looks like:
 ///   Name            : firefox
+///   Groups          : xorg
 ///   Depends On      : gtk3  libxt  mime-types  ...
 ///   ...
 ///   (blank line between packages)
@@ -121,6 +154,49 @@ fn parse_dep_names(deps_str: &str, skipped: &HashSet<String>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Scan `pacman -Si` output and collect the Description field for each package.
+fn parse_descriptions(output: &str) -> HashMap<String, String> {
+    let mut descriptions = HashMap::new();
+    let mut current_name: Option<String> = None;
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Name            : ") {
+            current_name = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Description     : ") {
+            if let Some(ref name) = current_name {
+                descriptions.insert(name.clone(), rest.trim().to_string());
+            }
+        }
+    }
+
+    descriptions
+}
+
+/// Scan `pacman -Si` output for packages whose Groups field contains one of
+/// the entries in SYSTEM_GROUPS.  Returns a map of package name → group.
+fn parse_group_demotions(output: &str) -> HashMap<String, String> {
+    let mut demotions = HashMap::new();
+    let mut current_name: Option<String> = None;
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Name            : ") {
+            current_name = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Groups          : ") {
+            if let Some(ref name) = current_name {
+                for group in rest.split_whitespace() {
+                    let g = group.to_lowercase();
+                    if SYSTEM_GROUPS.iter().any(|&sg| sg == g) {
+                        demotions.insert(name.clone(), group.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    demotions
 }
 
 /// Build a quick-lookup map from warnings: package → skipped deps it needs.

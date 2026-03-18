@@ -1,6 +1,7 @@
 mod aur;
 mod classify;
 mod config;
+mod config_upgrade;
 mod depcheck;
 mod environment;
 mod filters;
@@ -54,6 +55,10 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
+    /// Don't show package descriptions in the update list
+    #[arg(long)]
+    no_descriptions: bool,
+
     /// Output machine-readable JSON instead of human-readable text.
     /// Implies --dry-run (nothing is installed).
     #[arg(long)]
@@ -67,6 +72,11 @@ struct Cli {
     #[arg(long)]
     gen_config: bool,
 
+    /// Upgrade the config file with any missing keys (new defaults), preserving
+    /// all values you have already set
+    #[arg(long)]
+    upgrade_config: bool,
+
     /// Bypass all filters and run a full system upgrade (pacman -Syu).
     /// Use this periodically to apply deferred system/core and KDE updates.
     /// This is the Arch-recommended upgrade path and avoids partial upgrades.
@@ -79,6 +89,30 @@ fn main() -> Result<()> {
 
     if cli.gen_config {
         print!("{}", config::sample_config());
+        return Ok(());
+    }
+
+    // Resolve config path early so --upgrade-config can use it
+    let config_path = cli.config.clone().unwrap_or_else(|| {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from(".config"))
+            .join("pacselect")
+            .join("config.toml")
+    });
+
+    if cli.upgrade_config {
+        let before = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let changed = config_upgrade::upgrade(&config_path, config::sample_config())?;
+        if changed {
+            let added = config_upgrade::added_keys(config::sample_config(), &before);
+            println!("{}", "Config upgraded:".green().bold());
+            for key in &added {
+                println!("  {} {}", "+".green(), key.dimmed());
+            }
+            println!("  {}", config_path.display().to_string().dimmed());
+        } else {
+            println!("{}", "Config is already up to date.".green());
+        }
         return Ok(());
     }
 
@@ -106,13 +140,6 @@ fn main() -> Result<()> {
     println!();
 
     // ── Configuration ────────────────────────────────────────────────────────
-    let config_path = cli.config.clone().unwrap_or_else(|| {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from(".config"))
-            .join("pacselect")
-            .join("config.toml")
-    });
-
     let cfg = config::Config::load(&config_path)?;
 
     // Merge CLI --skip flags with config extra_skip
@@ -122,6 +149,12 @@ fn main() -> Result<()> {
     let filter_system = !cli.no_system_filter && cfg.filter_sets.system_core;
     let filter_kde = !cli.no_kde_filter && cfg.filter_sets.kde_core;
 
+    // CLI flags take precedence over config defaults
+    let show_descriptions = !cli.no_descriptions && cfg.display.descriptions;
+    let verbose = cli.verbose || cfg.display.verbose;
+    let dry_run = cli.dry_run || cfg.behavior.dry_run;
+    let yes = cli.yes || cfg.behavior.auto_confirm;
+
     // ── Full upgrade path ────────────────────────────────────────────────────
     if cli.full_upgrade {
         println!(
@@ -130,8 +163,7 @@ fn main() -> Result<()> {
                 .cyan()
                 .bold()
         );
-        if !cli.yes {
-            print!("\n{}", "Proceed with full system upgrade? [y/N] ".bold());
+        if !yes {
             io::stdout().flush()?;
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
@@ -164,7 +196,7 @@ fn main() -> Result<()> {
         pending.len().to_string().bold()
     );
 
-    if cli.verbose {
+    if verbose {
         println!();
     }
 
@@ -186,7 +218,7 @@ fn main() -> Result<()> {
             env.kde_frameworks_minor.as_deref(),
         ) {
             Some(reason) => {
-                if cli.verbose && !cli.json {
+                if verbose && !cli.json {
                     let aur_tag = if foreign.contains(&update.name.to_lowercase()) {
                         " [AUR]".dimmed().to_string()
                     } else {
@@ -205,7 +237,7 @@ fn main() -> Result<()> {
                 skipped.push((update, reason));
             }
             None => {
-                if cli.verbose && !cli.json {
+                if verbose && !cli.json {
                     let aur_tag = if foreign.contains(&update.name.to_lowercase()) {
                         " [AUR]".dimmed().to_string()
                     } else {
@@ -240,7 +272,37 @@ fn main() -> Result<()> {
     // have intentionally deferred.
     // See: https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported
     depcheck::sync_db();
-    let dep_warnings = depcheck::warnings_map(depcheck::check(&safe_names, &skipped_names));
+    let si = depcheck::check_all(&safe_names, &skipped_names);
+    let dep_warnings = depcheck::warnings_map(si.dep_warnings);
+    let group_demotions = si.group_demotions;
+    let descriptions = si.descriptions;
+
+    // Move any safe package whose pacman group implies system/graphics/session
+    // membership into skipped.  This catches packages the name patterns missed.
+    {
+        let mut i = 0;
+        while i < safe.len() {
+            if let Some(group) = group_demotions.get(safe[i].name.as_str()) {
+                let update = safe.remove(i);
+                if verbose && !cli.json {
+                    println!(
+                        "  {} {:<35} {} → {}",
+                        "SKIP".yellow().bold(),
+                        update.name.yellow(),
+                        update.old_version.dimmed(),
+                        update.new_version.dimmed(),
+                    );
+                    println!(
+                        "       {}",
+                        format!("(pacman group: {})", group).dimmed()
+                    );
+                }
+                skipped.push((update, SkipReason::GroupFilter(group.clone())));
+            } else {
+                i += 1;
+            }
+        }
+    }
 
     // Move any safe package that depends on a skipped package into skipped.
     // Installing it alone would be a partial upgrade — block it entirely.
@@ -249,6 +311,19 @@ fn main() -> Result<()> {
         while i < safe.len() {
             if let Some(needs) = dep_warnings.get(safe[i].name.as_str()) {
                 let update = safe.remove(i);
+                if verbose && !cli.json {
+                    println!(
+                        "  {} {:<35} {} → {}",
+                        "SKIP".yellow().bold(),
+                        update.name.yellow(),
+                        update.old_version.dimmed(),
+                        update.new_version.dimmed(),
+                    );
+                    println!(
+                        "       {}",
+                        format!("(partial upgrade risk — needs skipped: {})", needs.join(", ")).dimmed()
+                    );
+                }
                 skipped.push((update, SkipReason::PartialUpgrade { needs: needs.clone() }));
             } else {
                 i += 1;
@@ -274,7 +349,11 @@ fn main() -> Result<()> {
     // ── Summary bar ─────────────────────────────────────────────────────────
     let n_sys = skipped
         .iter()
-        .filter(|(_, r)| matches!(r, SkipReason::SystemCore))
+        .filter(|(_, r)| matches!(r, SkipReason::SystemCore | SkipReason::GroupFilter(_)))
+        .count();
+    let n_gfx = skipped
+        .iter()
+        .filter(|(_, r)| matches!(r, SkipReason::Graphics))
         .count();
     let n_kde = skipped
         .iter()
@@ -297,26 +376,71 @@ fn main() -> Result<()> {
     println!();
     let bar = "─".repeat(62);
     println!("{}", bar.dimmed());
-    let partial_note = if n_partial > 0 {
-        format!("  partial: {}", n_partial)
-    } else {
+
+    // Build a compact summary like:  system: 4  graphics: 2  mesa: 2  kde: 3
+    let mut parts: Vec<String> = Vec::new();
+    if n_sys   > 0 { parts.push(format!("system: {}",   n_sys));   }
+    if n_gfx   > 0 { parts.push(format!("graphics: {}", n_gfx));  }
+    if n_kde   > 0 { parts.push(format!("kde: {}",      n_kde));   }
+    if n_usr   > 0 { parts.push(format!("user: {}",     n_usr));   }
+    if n_partial > 0 { parts.push(format!("partial: {}", n_partial)); }
+    let skipped_detail = if parts.is_empty() {
         String::new()
+    } else {
+        format!("({})", parts.join("  "))
     };
+
     println!(
         "  {}  {}    {} skipped  {}",
         "Safe to install:".green().bold(),
         safe.len().to_string().green().bold(),
         skipped.len().to_string().yellow(),
-        format!("(system: {}  kde: {}  user: {}{})", n_sys, n_kde, n_usr, partial_note).dimmed()
+        skipped_detail.dimmed()
     );
     println!("{}", bar.dimmed());
 
     if safe.is_empty() {
-        println!(
-            "\n{}\n{}",
-            "No safe application updates available.".yellow(),
-            "Run 'pacselect --full-upgrade' or 'sudo pacman -Syu' for a full system upgrade.".dimmed()
-        );
+        let critical_pending: Vec<&str> = {
+            const CRITICAL_ABI: &[&str] = &[
+                "glibc", "lib32-glibc", "gcc-libs", "lib32-gcc-libs",
+                "openssl", "nss", "nspr",
+                "systemd", "systemd-libs",
+                "dbus", "dbus-broker",
+                "pam", "linux-pam", "krb5",
+                "icu", "zlib", "zstd",
+            ];
+            skipped
+                .iter()
+                .filter(|(_, r)| matches!(r, SkipReason::SystemCore))
+                .map(|(u, _)| u.name.as_str())
+                .filter(|name| CRITICAL_ABI.contains(name))
+                .collect()
+        };
+
+        if critical_pending.is_empty() {
+            println!(
+                "\n{}\n  {}",
+                "No safe application updates available.".yellow(),
+                format!(
+                    "When ready, run 'pacselect --full-upgrade' or 'sudo pacman -Syu' \
+                     to apply the {} deferred package(s) above.",
+                    skipped.len()
+                )
+                .dimmed()
+            );
+        } else {
+            println!(
+                "\n{}\n\n  {} {}\n  {}\n  {}",
+                "No safe application updates available.".yellow(),
+                "⚠".yellow().bold(),
+                "Critical system libraries require a full upgrade:".yellow().bold(),
+                critical_pending.join("  ").yellow(),
+                "Run 'sudo pacman -Syu' or 'pacselect --full-upgrade' soon."
+                    .yellow()
+                    .bold()
+            );
+        }
+
         let skipped_names_vec: Vec<&str> = skipped.iter().map(|(u, _)| u.name.as_str()).collect();
         let _ = log::write_run(&[], &skipped_names_vec, false, false);
         return Ok(());
@@ -337,23 +461,25 @@ fn main() -> Result<()> {
             u.new_version.cyan(),
             aur_tag,
         );
+        if let Some(desc) = descriptions.get(u.name.as_str()) {
+            if show_descriptions {
+                println!("     {}", desc.dimmed());
+            }
+        }
     }
 
-    // Show skipped names compactly when not in verbose mode
-    if !skipped.is_empty() && !cli.verbose {
+    // Show skipped names compactly grouped by reason when not in verbose mode
+    if !skipped.is_empty() && !verbose {
         println!(
             "\n{} ({}) — use {} for details:",
             "Skipped".yellow().bold(),
             skipped.len(),
             "--verbose".bold()
         );
-        let names: Vec<&str> = skipped.iter().map(|(u, _)| u.name.as_str()).collect();
-        for chunk in names.chunks(6) {
-            println!("  {}", chunk.join("  ").yellow().to_string().dimmed());
-        }
+        print_skipped_grouped(&skipped);
     }
 
-    if cli.dry_run {
+    if dry_run {
         println!("\n{}", "[ Dry run — nothing installed ]".cyan().italic());
         let skipped_names_vec: Vec<&str> = skipped.iter().map(|(u, _)| u.name.as_str()).collect();
         let _ = log::write_run(&[], &skipped_names_vec, false, true);
@@ -361,7 +487,7 @@ fn main() -> Result<()> {
     }
 
     // ── Confirmation ─────────────────────────────────────────────────────────
-    if !cli.yes {
+    if !yes {
         print!("\n{}", "Proceed with installation? [y/N] ".bold());
         io::stdout().flush()?;
         let mut input = String::new();
@@ -390,20 +516,124 @@ fn main() -> Result<()> {
 
     // Nudge the user toward a full upgrade when system/core packages are
     // accumulating.  Partial upgrades become riskier the longer they drift.
-    if n_sys + n_kde > 0 {
+    if n_sys + n_kde + n_gfx > 0 {
+        print_critical_abi_warning(&skipped);
+    }
+
+    Ok(())
+}
+
+fn print_skipped_grouped(skipped: &[(&updates::PackageUpdate, SkipReason)]) {
+    // Each group: (label, filter closure)
+    struct Group {
+        label: &'static str,
+        names: Vec<String>,
+    }
+
+    let mut groups: Vec<Group> = vec![
+        Group { label: "system",   names: Vec::new() },
+        Group { label: "graphics", names: Vec::new() },
+        Group { label: "kde",      names: Vec::new() },
+        Group { label: "user",     names: Vec::new() },
+        Group { label: "partial",  names: Vec::new() },
+    ];
+
+    for (u, reason) in skipped {
+        let idx = match reason {
+            SkipReason::SystemCore
+            | SkipReason::GroupFilter(_)        => 0,
+            SkipReason::Graphics                => 1,
+            SkipReason::KdeCore
+            | SkipReason::KdeVersionBump { .. } => 2,
+            SkipReason::UserFilter(_)           => 3,
+            SkipReason::PartialUpgrade { .. }   => 4,
+        };
+        groups[idx].names.push(u.name.clone());
+    }
+
+    for g in &groups {
+        if g.names.is_empty() { continue; }
+        // Label column is 10 chars wide so rows stay aligned
+        print!("  {:<10}", format!("{}:", g.label).yellow().bold());
+        let mut col = 12usize; // 2 indent + 10 label
+        for name in &g.names {
+            let token = format!("{}  ", name);
+            if col + token.len() > 78 {
+                println!();
+                print!("  {:<10}", "");
+                col = 12;
+            }
+            print!("{}", token.dimmed());
+            col += token.len();
+        }
+        println!();
+    }
+}
+
+fn print_critical_abi_warning(skipped: &[(&updates::PackageUpdate, SkipReason)]) {
+    // Packages whose ABI or runtime is shared by many running processes.
+    // Deferring these for more than a few days meaningfully increases the
+    // risk of a broken system state.
+    const CRITICAL_ABI: &[&str] = &[
+        "glibc", "lib32-glibc", "gcc-libs", "lib32-gcc-libs",
+        "openssl", "nss", "nspr",
+        "systemd", "systemd-libs",
+        "dbus", "dbus-broker",
+        "pam", "linux-pam", "krb5",
+        "icu", "zlib", "zstd",
+    ];
+
+    let n_sys_kde = skipped
+        .iter()
+        .filter(|(_, r)| matches!(
+            r,
+            SkipReason::SystemCore
+                | SkipReason::GroupFilter(_)
+                | SkipReason::Graphics
+                | SkipReason::KdeCore
+                | SkipReason::KdeVersionBump { .. }
+        ))
+        .count();
+
+    let critical_pending: Vec<&str> = skipped
+        .iter()
+        .filter(|(_, r)| matches!(r, SkipReason::SystemCore))
+        .map(|(u, _)| u.name.as_str())
+        .filter(|name| CRITICAL_ABI.contains(name))
+        .collect();
+
+    if critical_pending.is_empty() {
         println!(
             "  {}",
             format!(
                 "Note: {} deferred system/core package(s) pending — run \
                  'pacselect --full-upgrade' or 'sudo pacman -Syu' periodically \
                  to avoid partial-upgrade drift.",
-                n_sys + n_kde
+                n_sys_kde
             )
             .dimmed()
         );
+    } else {
+        println!(
+            "\n  {} {}",
+            "⚠".yellow().bold(),
+            "Critical system libraries are pending a full upgrade:".yellow().bold()
+        );
+        println!("  {}", critical_pending.join("  ").yellow());
+        println!(
+            "  {}",
+            "These packages are shared by many running processes. Leaving them \
+             out of sync with the rest of the system increases the risk of \
+             instability or broken dependencies."
+                .yellow()
+        );
+        println!(
+            "  {}",
+            "Run 'sudo pacman -Syu' or 'pacselect --full-upgrade' soon."
+                .yellow()
+                .bold()
+        );
     }
-
-    Ok(())
 }
 
 // ── JSON output types ──────────────────────────────────────────────────────
@@ -500,6 +730,11 @@ fn print_logo() {
 fn print_filter_list() {
     println!("{}", "System/Core filter patterns:".bold());
     for p in filters::SYSTEM_CORE_PATTERNS {
+        println!("  {}", p);
+    }
+    println!();
+    println!("{}", "Graphics filter patterns:".bold());
+    for p in filters::GRAPHICS_PATTERNS {
         println!("  {}", p);
     }
     println!();

@@ -7,6 +7,56 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] — 2026-03-18
+
+### Added
+
+- **Graphics filter category** — the full graphics stack is now its own named
+  filter tier, separate from system/core. Covers all Mesa sub-packages
+  (`opencl-mesa`, `vulkan-mesa-*`, `libva-mesa-driver`, `mesa-vdpau`, …),
+  NVIDIA/AMD/Intel GPU drivers, the Vulkan/GL dispatch layer (`vulkan-icd-loader`,
+  `libglvnd`), Xorg, Wayland, and the kernel GPU userspace bridge (`libpciaccess`).
+  Users now see `graphics: N` in the summary bar and deferred graphics packages
+  grouped under `graphics:` in the skipped list — making it obvious when a full
+  upgrade is needed to pick up GPU driver updates.
+- **Group-based safety net** — after name-pattern classification, a single
+  `pacman -Si` batch query checks the Groups field of every safe package.
+  Any package whose group is `xorg`, `plasma`, `base`, or similar is demoted
+  to skipped automatically, catching packages the name patterns miss.
+- **Package descriptions** — the safe-to-install list now shows a short
+  description from `pacman -Si` below each package name. Zero extra process
+  calls: descriptions are extracted from the same batch query used for dep-check
+  and group detection. Hide with `--no-descriptions` or `display.descriptions = false`
+  in config.
+- **Grouped skipped display** — deferred packages are now shown grouped by
+  category (`system`, `graphics`, `kde`, `user`, `partial`) instead of a flat
+  word-wrapped list, so users get an at-a-glance picture of what part of the
+  system is being held back.
+- **`--upgrade-config`** — merges any new default keys from the current schema
+  into an existing config file, preserving all values the user has already set
+  and their comments. Prints a list of added key paths. Safe to re-run; reports
+  "Config is already up to date." when nothing is missing.
+- **`[display]` config section** — `descriptions` (bool, default `true`) and
+  `verbose` (bool, default `false`) can now be set persistently in config.
+- **`[behavior]` config section** — `auto_confirm` (bool, default `false`) and
+  `dry_run` (bool, default `false`) can now be set persistently in config.
+  All CLI flags still override their config equivalents.
+- **`src/config_upgrade.rs`** — self-contained, copy-portable TOML config
+  upgrade module. No pacselect-specific logic; depends only on `toml_edit`
+  and `anyhow`. Includes 4 unit tests.
+
+### Changed
+
+- `SkipReason` gains a `Graphics` variant (replaces ad-hoc graphics entries
+  inside `SystemCore`). `GroupFilter(String)` variant added for packages
+  demoted via their pacman group.
+- `depcheck::check()` replaced by `depcheck::check_all()` which returns a
+  single `SiResult` containing dep warnings, group demotions, and descriptions
+  — one `pacman -Si` subprocess for all three.
+- Summary bar breakdown now shows `system`, `graphics`, `kde`, `user`,
+  `partial` counts individually.
+- `--list-filters` output now includes the Graphics patterns section.
+
 ## [0.3.0] — 2026-03-16
 
 ### Fixed

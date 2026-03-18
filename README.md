@@ -27,14 +27,20 @@ pacSelect separates these automatically. You get the app updates immediately; th
 | Feature | Detail |
 |---|---|
 | **Safe-app detection** | Uses `checkupdates` (read-only, never touches pacman state) to find pending updates, then classifies each package |
-| **System/core filter** | Blocks kernel, initramfs, systemd, glibc, Mesa, GPU drivers, audio pipeline, and ~100 other system packages |
+| **System/core filter** | Blocks kernel, initramfs, systemd, glibc, audio pipeline, and ~80 other system packages |
+| **Graphics filter** | Separate category covering the full graphics stack: Mesa (all sub-packages), NVIDIA/AMD/Intel drivers, Vulkan/GL dispatch libs, Xorg, Wayland |
 | **KDE core filter** | Unconditionally blocks session-critical packages: `kwin`, `plasma-*`, `sddm`, `kscreenlocker`, etc. |
-| **KDE version-bump detection** | Detects the installed KDE Frameworks version at runtime (`pacman -Q kcoreaddons`) and skips *any* KDE ecosystem package moving to a new minor release line (e.g. 6.23 → 6.24) |
+| **KDE version-bump detection** | Detects the installed KDE Frameworks version at runtime and skips *any* KDE ecosystem package moving to a new minor release line (e.g. 6.23 → 6.24) |
+| **Group-based safety net** | After name-pattern classification, runs a single `pacman -Si` over all safe packages and demotes any whose pacman group (e.g. `xorg`, `plasma`, `base`) implies system membership |
+| **Package descriptions** | Shows a short description from `pacman -Si` below each safe package — no extra process calls |
 | **AUR labelling** | Runs `pacman -Qm` to flag foreign/AUR packages in output and JSON |
-| **Dependency safety check** | After classifying, runs `pacman -Si` against safe packages; any that depend on a skipped package are **blocked** (moved to skipped) to prevent partial upgrades |
+| **Dependency safety check** | Reuses the same `pacman -Si` batch; any safe package that depends on a skipped package is **blocked** to prevent partial upgrades |
+| **Grouped skipped display** | Deferred packages are shown grouped by category (`system`, `graphics`, `kde`, `user`, `partial`) so you can see at a glance what part of the system is held back |
 | **History log** | Appends every run to `~/.local/share/pacselect/history.log` |
 | **JSON output** | `--json` emits machine-readable output — designed as the backend for a future KDE system-tray app |
 | **User filter patterns** | Config file or `--skip` flag to permanently exclude extra packages, with glob support |
+| **Config upgrade** | `--upgrade-config` merges new default keys into an existing config file without overwriting any values you've already set |
+| **Full pacman output** | pacman's stdout and stderr are passed through directly — post-install notes, `.pacnew` warnings, and configuration change notices are never suppressed |
 
 ---
 
@@ -116,6 +122,7 @@ pacselect --gen-config > ~/.config/pacselect/config.toml
 | `--dry-run` | `-n` | Show what would happen; install nothing |
 | `--yes` | `-y` | Skip the confirmation prompt |
 | `--verbose` | `-v` | Per-package SAFE/SKIP classification with reasons |
+| `--no-descriptions` | | Hide the description line shown below each safe package |
 | `--json` | | Machine-readable JSON output (implies dry-run) |
 | `--skip PATTERN` | | Extra glob pattern to always skip; repeatable |
 | `--no-system-filter` | | Disable the system/core filter *(dangerous)* |
@@ -124,18 +131,29 @@ pacselect --gen-config > ~/.config/pacselect/config.toml
 | `--config PATH` | | Use an alternate config file |
 | `--list-filters` | | Print all built-in blocked patterns and exit |
 | `--gen-config` | | Print a sample config file to stdout and exit |
+| `--upgrade-config` | | Add missing keys to your config file, preserving existing values |
 
 ---
 
 ## Configuration
 
-pacSelect reads `~/.config/pacselect/config.toml` on startup (created automatically on first run if you use `--gen-config`).
+pacSelect reads `~/.config/pacselect/config.toml` on startup. Generate a commented template with:
+
+```bash
+pacselect --gen-config > ~/.config/pacselect/config.toml
+```
+
+If you already have a config from an older version, bring it up to date without losing your settings:
+
+```bash
+pacselect --upgrade-config
+```
 
 ```toml
 # ~/.config/pacselect/config.toml
 
 [filter_sets]
-# Block system/core packages (kernel, systemd, glibc, Mesa, GPU drivers, …)
+# Block kernel, systemd, glibc, audio pipeline, storage, and other core packages
 system_core = true
 
 # Block KDE core session packages and version-line bumps
@@ -143,35 +161,49 @@ kde_core = true
 
 [filters]
 # Extra package patterns to ALWAYS skip, on top of the built-in lists.
-# Supports prefix globs ("myapp*") and suffix globs ("*-git").
 extra_skip = [
     # "spotify",
-    # "discord",
     # "proprietary-*",
 ]
+
+[display]
+# Show a short description below each safe package in the update list
+descriptions = true
+
+# Show per-package SAFE/SKIP classification with reasons (same as --verbose)
+verbose = false
+
+[behavior]
+# Skip the confirmation prompt (same as --yes)
+auto_confirm = false
+
+# Never install, only show what would happen (same as --dry-run)
+dry_run = false
 ```
+
+All CLI flags take precedence over config values when both are set.
 
 ---
 
 ## How classification works
 
-Each pending update passes through four filter layers in order:
+Each pending update passes through filter layers in order:
 
 ```
 1. User filters    → extra_skip in config / --skip flags
-2. System/core     → ~100 kernel/systemd/glibc/Mesa/driver patterns
-3. KDE core        → session-critical: kwin, plasma-*, sddm, kscreenlocker, …
-4. KDE version bump → any KDE ecosystem package (k*, attica, solid, …)
+2. Graphics        → Mesa (all sub-packages), NVIDIA/AMD/Intel drivers,
+                     Vulkan/GL dispatch, Xorg, Wayland, libpciaccess
+3. System/core     → kernel, boot, glibc, systemd, audio, network, storage, …
+4. KDE core        → session-critical: kwin, plasma-*, sddm, kscreenlocker, …
+5. KDE version bump → any KDE ecosystem package (k*, attica, solid, …)
                       moving to a new minor release line vs. what's installed
 ```
 
-A package that passes all four layers is **safe** and will be installed. The first layer that matches determines the skip reason shown in `--verbose` output.
+After initial classification, a second pass over the safe set queries `pacman -Si` (one batch call) and:
+- Demotes packages whose pacman **group** (e.g. `xorg`, `plasma`, `base`) implies system membership
+- Demotes packages whose runtime **dependencies** include a skipped package (partial-upgrade prevention)
 
-### System/core packages (examples)
-
-`linux*`, `linux-cachyos-*`, `linux-firmware`, `systemd`, `glibc`, `mesa`, `lib32-mesa`, `nvidia`, `nvidia-dkms`, `pipewire`, `pipewire-*`, `libpipewire`, `wireplumber`, `kmod`, `dbus`, `openssl`, `bpf`, `cpupower`, `xorg-server`, `xorg-xwayland`, `wayland`, `qt6-base`, `pacman`, …
-
-Run `pacselect --list-filters` to see the full list.
+A package that clears all layers and both post-classification checks is **safe** and will be installed.
 
 ### KDE version-bump detection
 
@@ -199,7 +231,16 @@ If a safe package depends on a skipped package, it is **blocked** and moved into
 This prevents partial upgrades entirely. The summary bar reflects the count:
 
 ```
-  Safe to install: 4    17 skipped  (system: 12  kde: 4  user: 0  partial: 1)
+  Safe to install: 4    17 skipped  (system: 8  graphics: 5  kde: 4)
+```
+
+The skipped section groups packages by category:
+
+```
+Skipped (17) — use --verbose for details:
+  system:    systemd  glibc  openssl  pipewire
+  graphics:  opencl-mesa  vulkan-mesa-implicit-layers  nvidia-utils  wayland
+  kde:       kwin  plasma-workspace  karchive
 ```
 
 ---

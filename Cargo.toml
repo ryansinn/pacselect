@@ -1,6 +1,6 @@
 [package]
 name = "pacselect"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Selective pacman updater — safely updates apps without touching system/core packages"
 license = "GPL-3.0-or-later"
@@ -15,6 +15,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+toml_edit = "0.22"
 anyhow = "1"
 colored = "2"
 dirs = "5"

@@ -9,6 +9,12 @@ pub struct Config {
 
     #[serde(default)]
     pub filters: FilterConfig,
+
+    #[serde(default)]
+    pub display: DisplayConfig,
+
+    #[serde(default)]
+    pub behavior: BehaviorConfig,
 }
 
 /// Toggle the built-in filter categories on/off.
@@ -40,6 +46,43 @@ pub struct FilterConfig {
     /// lists. Supports the same glob syntax: "pkg*" or "*-suffix".
     #[serde(default)]
     pub extra_skip: Vec<String>,
+}
+
+/// Display preferences.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DisplayConfig {
+    /// Show a short description below each package in the update list.
+    /// Default: true. Override with --no-descriptions.
+    #[serde(default = "default_true")]
+    pub descriptions: bool,
+
+    /// Show per-package classification details (SAFE / SKIP + reason).
+    /// Default: false. Override with --verbose / -v.
+    #[serde(default)]
+    pub verbose: bool,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            descriptions: true,
+            verbose: false,
+        }
+    }
+}
+
+/// Behavioural defaults.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct BehaviorConfig {
+    /// Skip the confirmation prompt and install immediately.
+    /// Default: false. Override with --yes / -y.
+    #[serde(default)]
+    pub auto_confirm: bool,
+
+    /// Show what would be updated without installing anything.
+    /// Default: false. Override with --dry-run / -n.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_true() -> bool {
@@ -82,5 +125,22 @@ extra_skip = [
     # "spotify",
     # "proprietary-*",
 ]
+
+[display]
+# Show a short description below each package in the update list.
+descriptions = true
+
+# Show per-package classification details (SAFE / SKIP + reason) for every
+# package evaluated. Equivalent to --verbose / -v.
+verbose = false
+
+[behavior]
+# Skip the confirmation prompt and install immediately.
+# Equivalent to --yes / -y.
+auto_confirm = false
+
+# Show what would be updated without installing anything.
+# Equivalent to --dry-run / -n.
+dry_run = false
 "#
 }
