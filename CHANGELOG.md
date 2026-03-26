@@ -7,6 +7,62 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.0] — 2026-03-25
+
+### Added
+
+- **Soname-bump detection with blocking and advisory tiers** — when a library
+  in the safe-to-install set carries a versioned soname (e.g.
+  `libvpx.so=12-64`), pacselect now compares the installed soname (from
+  `pacman -Qi`) against the new soname (from `pacman -Si`) and acts on any
+  real ABI change:
+
+  - **Blocking** — if the soname changed *and* one or more installed
+    reverse-dependents have **no pending rebuild** in the repos, the library
+    is moved to the skipped list (`soname` category). Installing it now would
+    break those packages with no fix available until the maintainer releases a
+    rebuild. The skipped output and `--verbose` detail both name the packages
+    that are waiting. No `--full-upgrade` hint is shown — the right action is
+    to wait for the repo to catch up.
+
+  - **Advisory** — if the soname changed but *all* installed
+    reverse-dependents already have pending rebuilds available, the library is
+    allowed through and an informational note lists those packages below the
+    skipped section. A `--full-upgrade` is suggested to update everything
+    together.
+
+  - **Silent** — if the soname is unchanged (patch/minor release, no ABI
+    break), nothing is printed regardless of how many reverse-dependents exist.
+    This eliminates the false-positive noise that would otherwise fire on
+    every `gtk3`, `pango`, `freetype2`, etc. update.
+
+- **New `SkipReason::SonameBump`** — library packages blocked by the above
+  check appear as `soname: N` in the summary bar and under a `soname:` group
+  in the skipped list, keeping them visually distinct from partial-upgrade
+  and system/core deferrals.
+
+  *Motivation:* the `libvpx`/`firefox-wayland-cachy-hg` incident — libvpx
+  was rebuilt and released while firefox had not yet been rebuilt against the
+  new soname. Running `pacman -Syu` (or pacselect without this check) would
+  install the new libvpx and silently break the installed firefox binary at
+  runtime. pacselect now detects and blocks this state automatically.
+
+---
+
+## [0.5.1] — 2026-03-23
+
+### Fixed
+
+- **`libwireplumber` now blocked alongside `wireplumber`** — the client
+  library and the session daemon ship from the same source package and must
+  stay version-matched. Previously, `wireplumber` was correctly deferred as
+  live session infrastructure while `libwireplumber` was allowed through,
+  creating a potential version mismatch between the running daemon and its
+  client library. Both are now listed under the system/core filter.
+  `lib32-libwireplumber` is also covered for consistency.
+
+---
+
 ## [0.5.0] — 2026-03-18
 
 ### Added

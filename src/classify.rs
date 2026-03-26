@@ -20,6 +20,10 @@ pub enum SkipReason {
     /// Installing this package would cause a partial upgrade: it depends on
     /// one or more packages that are being skipped this run.
     PartialUpgrade { needs: Vec<String> },
+    /// This library's soname bumped but one or more installed reverse-dependents
+    /// have no pending update available — updating now would break them with no
+    /// fix available until the maintainer releases a rebuild.
+    SonameBump { missing_rebuilds: Vec<String> },
 }
 
 impl std::fmt::Display for SkipReason {
@@ -35,6 +39,9 @@ impl std::fmt::Display for SkipReason {
             SkipReason::GroupFilter(grp) => write!(f, "pacman group: {}", grp),
             SkipReason::PartialUpgrade { needs } => {
                 write!(f, "partial upgrade risk — needs skipped: {}", needs.join(", "))
+            }
+            SkipReason::SonameBump { missing_rebuilds } => {
+                write!(f, "soname bump — waiting for repo rebuild of: {}", missing_rebuilds.join(", "))
             }
         }
     }

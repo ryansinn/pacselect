@@ -42,6 +42,16 @@ pub fn sync_db() {
         .status();
 }
 
+/// An installed package that depends on a library being updated, but is
+/// itself not in the current update set — meaning the update could break it.
+#[derive(Debug)]
+pub struct ReverseDepWarning {
+    /// The library/package being updated.
+    pub updated_pkg: String,
+    /// Installed packages that depend on it but are NOT being updated.
+    pub broken_by: Vec<String>,
+}
+
 /// The result of a single-pass `pacman -Si` query over all safe packages.
 pub struct SiResult {
     /// Packages that depend on a skipped package (partial-upgrade risk).
@@ -51,6 +61,9 @@ pub struct SiResult {
     pub group_demotions: HashMap<String, String>,
     /// Short description for each package, from the Description field.
     pub descriptions: HashMap<String, String>,
+    /// Libraries in the safe set whose installed reverse-dependents are NOT
+    /// also being updated — risk of broken installed packages.
+    pub reverse_dep_warnings: Vec<ReverseDepWarning>,
 }
 
 /// Run a single `pacman -Si` over all safe packages and return both dep
@@ -61,6 +74,7 @@ pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
             dep_warnings: Vec::new(),
             group_demotions: HashMap::new(),
             descriptions: HashMap::new(),
+            reverse_dep_warnings: Vec::new(),
         };
     }
 
@@ -74,6 +88,7 @@ pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
             dep_warnings: Vec::new(),
             group_demotions: HashMap::new(),
             descriptions: HashMap::new(),
+            reverse_dep_warnings: Vec::new(),
         },
     };
 
@@ -85,7 +100,14 @@ pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
     };
     let group_demotions = parse_group_demotions(&stdout);
     let descriptions = parse_descriptions(&stdout);
-    SiResult { dep_warnings, group_demotions, descriptions }
+
+    // Build the set of all update names for the reverse-dep check, plus the
+    // new sonames provided by each package (from the -Si Provides field).
+    let safe_set: HashSet<String> = safe.iter().map(|s| s.to_lowercase()).collect();
+    let new_sonames = parse_new_sonames(&stdout);
+    let reverse_dep_warnings = check_reverse_deps(safe, &safe_set, &new_sonames);
+
+    SiResult { dep_warnings, group_demotions, descriptions, reverse_dep_warnings }
 }
 
 /// Parse `pacman -Si` output into a map of package → dep warnings.
@@ -197,6 +219,145 @@ fn parse_group_demotions(output: &str) -> HashMap<String, String> {
     }
 
     demotions
+}
+
+/// Extract `libfoo.so=X-ARCH` tokens from a `pacman -Si` Provides field,
+/// keyed by package name.  Used to compare against the installed sonames.
+fn parse_new_sonames(output: &str) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut current_name: Option<String> = None;
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Name            : ") {
+            current_name = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Provides        : ") {
+            if let Some(ref name) = current_name {
+                let sonames: Vec<String> = rest
+                    .split_whitespace()
+                    .filter(|p| p.contains(".so="))
+                    .map(|p| p.to_string())
+                    .collect();
+                if !sonames.is_empty() {
+                    map.insert(name.clone(), sonames);
+                }
+            }
+        }
+    }
+
+    map
+}
+
+/// For each package in `safe` that provides a shared library with a versioned
+/// soname (`.so=X`), query `pacman -Qi` for installed reverse-dependents NOT
+/// in `safe_set`, but only warn when the soname version actually changes
+/// compared to what is currently installed.  Patch-level updates that keep the
+/// same soname (e.g. gtk3 3.24.51→3.24.52 still provides libgtk-3.so=0-64)
+/// are silently ignored.
+fn check_reverse_deps(
+    safe: &[&str],
+    safe_set: &HashSet<String>,
+    new_sonames: &HashMap<String, Vec<String>>,
+) -> Vec<ReverseDepWarning> {
+    if safe.is_empty() {
+        return Vec::new();
+    }
+
+    // Only bother querying -Qi for packages that actually have a new soname
+    // in the -Si output — skip pure application packages immediately.
+    let lib_pkgs: Vec<&str> = safe
+        .iter()
+        .copied()
+        .filter(|p| new_sonames.contains_key(*p))
+        .collect();
+
+    if lib_pkgs.is_empty() {
+        return Vec::new();
+    }
+
+    let output = match Command::new("pacman")
+        .arg("-Qi")
+        .args(&lib_pkgs)
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_reverse_dep_warnings(&stdout, safe_set, new_sonames)
+}
+
+/// Parse `pacman -Qi` output to find library packages whose soname version
+/// changed AND whose installed reverse-dependents are not all in `safe_set`.
+///
+/// A warning is only emitted when the installed `Provides` soname token
+/// (e.g. `libvpx.so=12-64`) differs from the new version's soname token
+/// (e.g. `libvpx.so=13-64`).  When sonames are identical the update is
+/// ABI-compatible and no warning is needed.
+fn parse_reverse_dep_warnings(
+    output: &str,
+    safe_set: &HashSet<String>,
+    new_sonames: &HashMap<String, Vec<String>>,
+) -> Vec<ReverseDepWarning> {
+    let mut warnings = Vec::new();
+
+    let mut current_name: Option<String> = None;
+    let mut installed_sonames: Vec<String> = Vec::new();
+    let mut required_by: Vec<String> = Vec::new();
+
+    // Closure to evaluate and flush one package's data.
+    let flush = |name: String,
+                     installed: &mut Vec<String>,
+                     req_by: &mut Vec<String>,
+                     warnings: &mut Vec<ReverseDepWarning>| {
+        let soname_bumped = new_sonames
+            .get(&name)
+            .map(|new| new != installed)
+            .unwrap_or(false);
+
+        if soname_bumped && !req_by.is_empty() {
+            let broken_by: Vec<String> = req_by
+                .drain(..)
+                .filter(|r| !safe_set.contains(&r.to_lowercase()))
+                .collect();
+            if !broken_by.is_empty() {
+                warnings.push(ReverseDepWarning { updated_pkg: name, broken_by });
+            }
+        } else {
+            req_by.clear();
+        }
+        installed.clear();
+    };
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Name            : ") {
+            if let Some(name) = current_name.take() {
+                flush(name, &mut installed_sonames, &mut required_by, &mut warnings);
+            }
+            installed_sonames.clear();
+            required_by.clear();
+            current_name = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Provides        : ") {
+            installed_sonames = rest
+                .split_whitespace()
+                .filter(|p| p.contains(".so="))
+                .map(|p| p.to_string())
+                .collect();
+        } else if let Some(rest) = line.strip_prefix("Required By     : ") {
+            required_by = rest
+                .split_whitespace()
+                .filter(|&p| p != "None")
+                .map(|p| p.to_string())
+                .collect();
+        }
+    }
+
+    // Flush the last package
+    if let Some(name) = current_name {
+        flush(name, &mut installed_sonames, &mut required_by, &mut warnings);
+    }
+
+    warnings
 }
 
 /// Build a quick-lookup map from warnings: package → skipped deps it needs.

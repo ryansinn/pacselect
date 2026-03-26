@@ -328,6 +328,7 @@ fn main() -> Result<()> {
     let dep_warnings = depcheck::warnings_map(si.dep_warnings);
     let group_demotions = si.group_demotions;
     let descriptions = si.descriptions;
+    let reverse_dep_warnings = si.reverse_dep_warnings;
 
     // Move any safe package whose pacman group implies system/graphics/session
     // membership into skipped.  This catches packages the name patterns missed.
@@ -383,6 +384,50 @@ fn main() -> Result<()> {
         }
     }
 
+    // Block libraries whose soname bumped but whose installed reverse-dependents
+    // have no pending update available.  Updating such a library now would break
+    // those packages with no fix available until the maintainer releases a rebuild.
+    //
+    // Libraries where ALL reverse-deps DO have pending updates are advisory-only:
+    // a full upgrade will resolve them, so we warn but don't block.
+    let all_pending_names: HashSet<String> = pending.all.iter()
+        .map(|u| u.name.to_lowercase())
+        .collect();
+
+    // advisory_rev_warnings: soname bumped, but every broken_by has a pending update
+    let mut advisory_rev_warnings: Vec<&depcheck::ReverseDepWarning> = Vec::new();
+
+    for w in &reverse_dep_warnings {
+        let missing_rebuilds: Vec<String> = w.broken_by.iter()
+            .filter(|r| !all_pending_names.contains(&r.to_lowercase()))
+            .cloned()
+            .collect();
+
+        if missing_rebuilds.is_empty() {
+            // All reverse-deps have pending updates — advisory only.
+            advisory_rev_warnings.push(w);
+        } else {
+            // Some reverse-deps have no pending update — block the library.
+            if let Some(pos) = safe.iter().position(|u| u.name.eq_ignore_ascii_case(&w.updated_pkg)) {
+                let update = safe.remove(pos);
+                if verbose && !cli.json {
+                    println!(
+                        "  {} {:<35} {} → {}",
+                        "SKIP".yellow().bold(),
+                        update.name.yellow(),
+                        update.old_version.dimmed(),
+                        update.new_version.dimmed(),
+                    );
+                    println!(
+                        "       {}",
+                        format!("(soname bump — no rebuild yet for: {}  — wait for repo to catch up)", missing_rebuilds.join(", ")).dimmed()
+                    );
+                }
+                skipped.push((update, SkipReason::SonameBump { missing_rebuilds }));
+            }
+        }
+    }
+
     // ── JSON output path ─────────────────────────────────────────────────────
     if cli.json {
         print_json(
@@ -424,6 +469,10 @@ fn main() -> Result<()> {
         .iter()
         .filter(|(_, r)| matches!(r, SkipReason::PartialUpgrade { .. }))
         .count();
+    let n_soname = skipped
+        .iter()
+        .filter(|(_, r)| matches!(r, SkipReason::SonameBump { .. }))
+        .count();
 
     println!();
     let bar = "─".repeat(62);
@@ -435,8 +484,7 @@ fn main() -> Result<()> {
     if n_gfx   > 0 { parts.push(format!("graphics: {}", n_gfx));  }
     if n_kde   > 0 { parts.push(format!("kde: {}",      n_kde));   }
     if n_usr   > 0 { parts.push(format!("user: {}",     n_usr));   }
-    if n_partial > 0 { parts.push(format!("partial: {}", n_partial)); }
-    let skipped_detail = if parts.is_empty() {
+    if n_partial > 0 { parts.push(format!("partial: {}", n_partial)); }    if n_soname  > 0 { parts.push(format!("soname: {}" , n_soname));  }    let skipped_detail = if parts.is_empty() {
         String::new()
     } else {
         format!("({})", parts.join("  "))
@@ -550,6 +598,47 @@ fn main() -> Result<()> {
         print_skipped_grouped(&skipped);
     }
 
+    // ── Reverse-dependency ABI warnings ─────────────────────────────────────
+    // Advisory: soname bumped, but all reverse-deps have pending rebuilds in
+    // the repo — safe to full-upgrade, everything lands together.
+    // Blocked libraries (some reverse-deps have no rebuild yet) are already
+    // in the skipped list with SkipReason::SonameBump.
+    if !advisory_rev_warnings.is_empty() && !cli.json {
+        println!();
+        println!(
+            "  {} {}",
+            "ℹ".cyan().bold(),
+            "Soname bump — these packages will update alongside this library:"
+                .cyan()
+                .bold()
+        );
+        println!(
+            "  {}",
+            "(All reverse-dependents have rebuilds pending — safe to run --full-upgrade)"
+                .dimmed()
+        );
+        println!();
+        for w in &advisory_rev_warnings {
+            println!("  {} {}", w.updated_pkg.cyan().bold(), "─".repeat(58usize.saturating_sub(w.updated_pkg.len())).dimmed());
+            let indent = "    ";
+            let max_width = 76usize;
+            let mut col = indent.len();
+            print!("{}", indent);
+            for name in &w.broken_by {
+                let token = format!("{}  ", name);
+                if col + token.len() > max_width && col > indent.len() {
+                    println!();
+                    print!("{}", indent);
+                    col = indent.len();
+                }
+                print!("{}", name.dimmed());
+                print!("  ");
+                col += token.len();
+            }
+            println!();
+        }
+    }
+
     if dry_run {
         println!("\n{}", "[ Dry run — nothing installed ]".cyan().italic());
         let skipped_names_vec: Vec<&str> = skipped.iter().map(|(u, _)| u.name.as_str()).collect();
@@ -627,6 +716,7 @@ fn print_skipped_grouped(skipped: &[(&updates::PackageUpdate, SkipReason)]) {
         Group { label: "kde",      names: Vec::new() },
         Group { label: "user",     names: Vec::new() },
         Group { label: "partial",  names: Vec::new() },
+        Group { label: "soname",   names: Vec::new() },
     ];
 
     for (u, reason) in skipped {
@@ -638,6 +728,7 @@ fn print_skipped_grouped(skipped: &[(&updates::PackageUpdate, SkipReason)]) {
             | SkipReason::KdeVersionBump { .. } => 2,
             SkipReason::UserFilter(_)           => 3,
             SkipReason::PartialUpgrade { .. }   => 4,
+            SkipReason::SonameBump { .. }       => 5,
         };
         groups[idx].names.push(u.name.clone());
     }

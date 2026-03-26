@@ -124,6 +124,8 @@ pub const SYSTEM_CORE_PATTERNS: &[&str] = &[
     "gst-plugin-pipewire",
     "alsa-card-profiles",   // ships with pipewire, tracks the same version
     "wireplumber",
+    "libwireplumber",           // client library — must match the running daemon version
+    "lib32-libwireplumber",
     "alsa-lib",
     "lib32-alsa-lib",
 
