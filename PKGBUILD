@@ -9,7 +9,7 @@ license=('GPL-3.0-or-later')
 depends=('pacman' 'sudo' 'pacman-contrib')
 makedepends=('rust' 'cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # update after tagging: curl -sL https://github.com/ryansinn/pacselect/archive/refs/tags/v0.6.0.tar.gz | sha256sum
+sha256sums=('9b2d00e5444eed70f9635b39b294a8f1ebca7c15b837ac4d5ea77045c672977f')
 
 # To build from a local checkout instead of a tarball, comment out
 # the source/sha256sums lines above and use:
