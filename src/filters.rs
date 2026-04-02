@@ -69,6 +69,8 @@ pub const SYSTEM_CORE_PATTERNS: &[&str] = &[
     // Updating these mid-session can affect Plasma and running Qt/GTK apps
     "qt6-base",
     "qt5-base",
+    "gtk4",
+    "lib32-gtk4",
     "glib2",
     "lib32-glib2",
 
@@ -98,6 +100,7 @@ pub const SYSTEM_CORE_PATTERNS: &[&str] = &[
     "zlib",
     "zstd",
     "xz",
+    "lib32-xz",
     "lz4",
 
     // ── Network core ─────────────────────────────────────────────────────────

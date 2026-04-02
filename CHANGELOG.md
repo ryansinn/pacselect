@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.1] — 2026-04-02
+
+### Fixed
+
+- **`gtk4` / `lib32-gtk4` now deferred** — `gtk4` is the GObject-based GUI
+  toolkit used by GTK applications, directly analogous to `qt6-base`. Replacing
+  it mid-session can affect running GTK apps, so it is now blocked in the core
+  widget toolkits section alongside `qt6-base` and `qt5-base`.
+
+- **`lib32-xz` now deferred** — `xz` was already blocked but its filter was an
+  exact-match pattern that did not cover the 32-bit variant `lib32-xz`.
+
+---
+
 ## [0.6.0] — 2026-03-25
 
 ### Added

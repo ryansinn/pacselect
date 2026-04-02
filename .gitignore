@@ -13,3 +13,10 @@
 
 # pacselect runtime files (not part of source)
 *.log
+
+# makepkg artifacts (produced by makepkg -si in the project root)
+src/pacselect-*/
+pkg/
+*.tar.gz
+*.pkg.tar.zst
+*.pkg.tar.xz
