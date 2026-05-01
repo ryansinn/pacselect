@@ -329,6 +329,7 @@ fn main() -> Result<()> {
     let group_demotions = si.group_demotions;
     let descriptions = si.descriptions;
     let reverse_dep_warnings = si.reverse_dep_warnings;
+    let all_deps = si.all_deps;
 
     // Move any safe package whose pacman group implies system/graphics/session
     // membership into skipped.  This catches packages the name patterns missed.
@@ -359,7 +360,16 @@ fn main() -> Result<()> {
 
     // Move any safe package that depends on a skipped package into skipped.
     // Installing it alone would be a partial upgrade — block it entirely.
+    //
+    // This is run as a fixpoint loop: each demotion may expose new transitive
+    // partial-upgrade violations (e.g. boost-libs gets demoted because it
+    // depends on glibc; snapper depends on boost-libs and must also be demoted
+    // even though boost-libs was still safe when the initial dep-warning scan
+    // ran).  We iterate using the full all_deps map cached from the -Si query
+    // until no further demotions occur.
     {
+        // Seed from the first-pass dep_warnings computed against the initial
+        // skipped set.
         let mut i = 0;
         while i < safe.len() {
             if let Some(needs) = dep_warnings.get(safe[i].name.as_str()) {
@@ -380,6 +390,56 @@ fn main() -> Result<()> {
                 skipped.push((update, SkipReason::PartialUpgrade { needs: needs.clone() }));
             } else {
                 i += 1;
+            }
+        }
+
+        // Transitive fixpoint: keep demoting until nothing changes.
+        loop {
+            let current_skipped: HashSet<String> = skipped
+                .iter()
+                .map(|(u, _)| u.name.to_lowercase())
+                .collect();
+
+            let mut moved = false;
+            let mut i = 0;
+            while i < safe.len() {
+                let pkg = safe[i].name.to_lowercase();
+                if let Some(deps) = all_deps.get(safe[i].name.as_str()) {
+                    let needs: Vec<String> = deps
+                        .iter()
+                        .filter(|d| current_skipped.contains(d.as_str()))
+                        .cloned()
+                        .collect();
+                    if !needs.is_empty() {
+                        let update = safe.remove(i);
+                        if verbose && !cli.json {
+                            println!(
+                                "  {} {:<35} {} → {}",
+                                "SKIP".yellow().bold(),
+                                update.name.yellow(),
+                                update.old_version.dimmed(),
+                                update.new_version.dimmed(),
+                            );
+                            println!(
+                                "       {}",
+                                format!(
+                                    "(partial upgrade risk — needs skipped: {})",
+                                    needs.join(", ")
+                                )
+                                .dimmed()
+                            );
+                        }
+                        skipped.push((update, SkipReason::PartialUpgrade { needs }));
+                        moved = true;
+                        continue;
+                    }
+                }
+                let _ = pkg; // suppress unused warning
+                i += 1;
+            }
+
+            if !moved {
+                break;
             }
         }
     }

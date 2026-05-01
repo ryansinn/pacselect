@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.3] — 2026-05-01
+
+### Fixed
+
+- **Transitive partial-upgrade detection** — the dependency safety check was
+  single-pass: it only flagged safe packages whose deps overlapped with the
+  *initially* skipped set (name-pattern matches).  Packages that became skipped
+  *during* the demotion passes (e.g. `boost-libs` demoted because it depends on
+  skipped `glibc`) were not in scope for the first scan, so packages depending
+  on them (e.g. `snapper` depending on `boost-libs`) slipped through as safe.
+  Pacman then aborted with a missing-soname error at install time.
+
+  The fix stores the full `Depends On` map for all safe packages from the
+  single `pacman -Si` batch call and runs partial-upgrade demotion as a
+  fixpoint loop — iterating until no further packages are moved — using that
+  cached map.  No additional pacman queries are made.
+
+---
+
 ## [0.6.2] — 2026-05-01
 
 ### Fixed

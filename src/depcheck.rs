@@ -64,6 +64,10 @@ pub struct SiResult {
     /// Libraries in the safe set whose installed reverse-dependents are NOT
     /// also being updated — risk of broken installed packages.
     pub reverse_dep_warnings: Vec<ReverseDepWarning>,
+    /// Full dependency map for every safe package: name → Vec of plain dep
+    /// names (version constraints stripped).  Used for iterative
+    /// partial-upgrade detection after later demotion passes.
+    pub all_deps: HashMap<String, Vec<String>>,
 }
 
 /// Run a single `pacman -Si` over all safe packages and return both dep
@@ -75,6 +79,7 @@ pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
             group_demotions: HashMap::new(),
             descriptions: HashMap::new(),
             reverse_dep_warnings: Vec::new(),
+            all_deps: HashMap::new(),
         };
     }
 
@@ -89,6 +94,7 @@ pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
             group_demotions: HashMap::new(),
             descriptions: HashMap::new(),
             reverse_dep_warnings: Vec::new(),
+            all_deps: HashMap::new(),
         },
     };
 
@@ -100,6 +106,7 @@ pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
     };
     let group_demotions = parse_group_demotions(&stdout);
     let descriptions = parse_descriptions(&stdout);
+    let all_deps = parse_all_deps(&stdout);
 
     // Build the set of all update names for the reverse-dep check, plus the
     // new sonames provided by each package (from the -Si Provides field).
@@ -107,7 +114,41 @@ pub fn check_all(safe: &[&str], skipped_names: &HashSet<String>) -> SiResult {
     let new_sonames = parse_new_sonames(&stdout);
     let reverse_dep_warnings = check_reverse_deps(safe, &safe_set, &new_sonames);
 
-    SiResult { dep_warnings, group_demotions, descriptions, reverse_dep_warnings }
+    SiResult { dep_warnings, group_demotions, descriptions, reverse_dep_warnings, all_deps }
+}
+
+/// Parse `pacman -Si` output into a complete dep map: package → all dep names.
+///
+/// Unlike `parse_warnings`, this returns every dependency regardless of
+/// whether it is skipped.  Used for iterative transitive partial-upgrade
+/// detection after later demotion passes add packages to the skipped set.
+fn parse_all_deps(output: &str) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut current_name: Option<String> = None;
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Name            : ") {
+            current_name = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Depends On      : ") {
+            if let Some(ref name) = current_name {
+                let deps: Vec<String> = rest
+                    .split_whitespace()
+                    .filter(|&d| d != "None")
+                    .map(|dep| {
+                        dep.split(|c| c == '>' || c == '<' || c == '=')
+                            .next()
+                            .unwrap_or(dep)
+                            .to_lowercase()
+                    })
+                    .collect();
+                if !deps.is_empty() {
+                    map.insert(name.clone(), deps);
+                }
+            }
+        }
+    }
+
+    map
 }
 
 /// Parse `pacman -Si` output into a map of package → dep warnings.
