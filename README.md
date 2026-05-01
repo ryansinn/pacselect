@@ -37,7 +37,9 @@ pacSelect separates these automatically. You get the app updates immediately; th
 | **AUR filtering** | AUR-installed packages (including an AUR-built `mesa`, GPU driver, or any other foreign package) pass through all the same name-pattern, group, and dependency filters as official packages — filtering is based on package name and group, not package origin |
 | **Self-update check** | At startup, warns if pacselect itself has a pending AUR update and offers to install it via your AUR helper before proceeding |
 | **Dependency safety check** | Reuses the same `pacman -Si` batch; any safe package that depends on a skipped package is **blocked** to prevent partial upgrades |
-| **Grouped skipped display** | Deferred packages are shown grouped by category (`system`, `graphics`, `kde`, `user`, `partial`) so you can see at a glance what part of the system is held back |
+| **Soname-bump detection** | Detects when a library's shared-object version changes and blocks the update if any installed reverse-dependent has no pending rebuild in the repos |
+| **Exact-version-pin detection** | Detects when an installed package pins a safe package at a specific version (e.g. `vim-runtime=9.2.0357`); if the pinner is being skipped, updating the pinned package would abort the transaction — so it is blocked too |
+| **Grouped skipped display** | Deferred packages are shown grouped by category (`system`, `graphics`, `kde`, `user`, `partial`, `soname`, `pinned`) so you can see at a glance what part of the system is held back |
 | **History log** | Appends every run to `~/.local/share/pacselect/history.log` |
 | **JSON output** | `--json` emits machine-readable output — designed as the backend for a future KDE system-tray app |
 | **User filter patterns** | Config file or `--skip` flag to permanently exclude extra packages, with glob support |
@@ -206,11 +208,14 @@ Each pending update passes through filter layers in order:
                       moving to a new minor release line vs. what's installed
 ```
 
-After initial classification, a second pass over the safe set queries `pacman -Si` (one batch call) and:
-- Demotes packages whose pacman **group** (e.g. `xorg`, `plasma`, `base`) implies system membership
-- Demotes packages whose runtime **dependencies** include a skipped package (partial-upgrade prevention)
+After initial classification, further passes over the safe set:
 
-A package that clears all layers and both post-classification checks is **safe** and will be installed.
+1. Query `pacman -Si` (one batch call) and demote packages whose pacman **group** (e.g. `xorg`, `plasma`, `base`) implies system membership → shown as `partial`
+2. Demote packages whose runtime **dependencies** include a skipped package (partial-upgrade prevention) → shown as `partial`
+3. Detect **soname bumps**: if a library's `.so` version changes and an installed reverse-dependent has no pending rebuild available, block the library → shown as `soname`
+4. Detect **exact-version pins**: if an installed package that is being skipped this run pins a safe package at a specific version (e.g. `vim` requires `vim-runtime=9.2.0357-1.1`), block the pinned package — pacman enforces exact-version constraints strictly and would abort the transaction → shown as `pinned`
+
+A package that clears all layers and all post-classification checks is **safe** and will be installed.
 
 ### KDE version-bump detection
 
@@ -248,7 +253,20 @@ Skipped (17) — use --verbose for details:
   system:    systemd  glibc  openssl  pipewire
   graphics:  opencl-mesa  vulkan-mesa-implicit-layers  nvidia-utils  wayland
   kde:       kwin  plasma-workspace  karchive
+  partial:   firefox                 (depends on skipped: nss)
+  soname:    libvpx                  (soname bump; waiting for repo rebuild)
+  pinned:    vim-runtime             (exact version pinned by skipped: vim)
 ```
+
+| Category | Reason |
+|---|---|
+| `system` | Kernel, boot, glibc, systemd, audio pipeline, network, storage, and other core packages |
+| `graphics` | Full GPU/display stack: Mesa, NVIDIA/AMD/Intel drivers, Vulkan/GL dispatch, Xorg, Wayland |
+| `kde` | KDE session-critical packages (`kwin`, `plasma-*`, `sddm`, …) or a KDE minor-version bump |
+| `user` | Matched a pattern from `extra_skip` in your config or a `--skip` flag |
+| `partial` | Updating this package alone would be a partial upgrade — it depends on (or belongs to a group with) a package that is being skipped |
+| `soname` | This library's shared-object version bumped but one or more installed reverse-dependents have no pending rebuild in the repos yet — updating now would break them |
+| `pinned` | An installed package that is being skipped this run depends on this package at an exact version; pacman would abort the transaction if this package were updated alone |
 
 ---
 

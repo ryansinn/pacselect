@@ -24,6 +24,11 @@ pub enum SkipReason {
     /// have no pending update available — updating now would break them with no
     /// fix available until the maintainer releases a rebuild.
     SonameBump { missing_rebuilds: Vec<String> },
+    /// One or more installed packages that will NOT be updated this run depend
+    /// on this package at an exact version (e.g. `vim-runtime=9.2.0357-1.1`).
+    /// Pacman enforces exact-version constraints strictly and would abort the
+    /// transaction if this package were updated alone.
+    ExactVersionPin { pinned_by: Vec<String> },
 }
 
 impl std::fmt::Display for SkipReason {
@@ -42,6 +47,9 @@ impl std::fmt::Display for SkipReason {
             }
             SkipReason::SonameBump { missing_rebuilds } => {
                 write!(f, "soname bump — waiting for repo rebuild of: {}", missing_rebuilds.join(", "))
+            }
+            SkipReason::ExactVersionPin { pinned_by } => {
+                write!(f, "exact version pinned by: {}", pinned_by.join(", "))
             }
         }
     }
@@ -146,6 +154,23 @@ mod tests {
     fn suffix_wildcard() {
         assert!(glob_match("lib32-mesa", "*-mesa"));
         assert!(!glob_match("mesa", "*-mesa"));
+    }
+
+    #[test]
+    fn interior_wildcard() {
+        // "linux-*-headers" must match linux-lts-headers, linux-zen-headers, etc.
+        assert!(glob_match("linux-lts-headers", "linux-*-headers"));
+        assert!(glob_match("linux-zen-headers", "linux-*-headers"));
+        assert!(glob_match("linux-hardened-headers", "linux-*-headers"));
+        // Must not match unrelated names
+        assert!(!glob_match("linux-headers", "linux-*-headers"));
+        assert!(!glob_match("linux-firmware", "linux-*-headers"));
+    }
+
+    #[test]
+    fn linux_lts_headers_is_system_core() {
+        let r = classify("linux-lts-headers", "6.12.1-1", "6.12.2-1", &[], true, false, None);
+        assert_eq!(r, Some(SkipReason::SystemCore));
     }
 
     #[test]

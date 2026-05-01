@@ -7,6 +7,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.2] — 2026-05-01
+
+### Fixed
+
+- **`linux-lts-headers` (and similar) now deferred** — the glob matcher only
+  handled `prefix*` and `*suffix` patterns. Interior wildcards like
+  `linux-*-headers` fell through to an exact-match check that never fired,
+  leaving `linux-lts-headers`, `linux-zen-headers`, `linux-hardened-headers`,
+  etc. in the safe list. The matcher now handles `prefix*suffix` patterns
+  correctly.
+
+- **Exact-version-pin detection** — pacman enforces `pkg=version` dependencies
+  strictly and aborts the transaction if the pinned version is not satisfied.
+  Previously, if an installed package (e.g. `vim`) was being skipped and
+  depended on another package at an exact version (e.g. `vim-runtime=9.2.0357`),
+  pacselect would put `vim-runtime` in the safe list and the resulting
+  transaction would fail. A new post-classification pass (`check_exact_version_pins`)
+  detects these constraints and moves the pinned package to the skipped list
+  under a new `pinned` category.
+
+---
+
 ## [0.6.1] — 2026-04-02
 
 ### Fixed

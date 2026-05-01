@@ -368,6 +368,121 @@ pub fn warnings_map(warnings: Vec<DepWarning>) -> HashMap<String, Vec<String>> {
         .collect()
 }
 
+/// Check for installed packages that have an exact-version pin on a safe
+/// package being updated.  If such a package is NOT itself being updated
+/// this session, pacman will refuse the transaction.
+///
+/// Must be called **after** all other demotions (group, partial-upgrade) so
+/// that the `safe` slice reflects what will actually be installed.
+///
+/// Example: `vim` depends on `vim-runtime=9.2.0357-1.1`.  If we update
+/// `vim-runtime` to `9.2.0388-1.1` while `vim` is being skipped, pacman
+/// aborts.  This function returns a `ReverseDepWarning` for `vim-runtime`
+/// with `broken_by: ["vim"]` so the caller can move it to skipped.
+pub fn check_exact_version_pins(
+    safe: &[&str],
+    safe_set: &HashSet<String>,
+) -> Vec<ReverseDepWarning> {
+    if safe.is_empty() {
+        return Vec::new();
+    }
+
+    // Step 1: pacman -Qi on all safe packages → collect Required By for each.
+    let qi1 = match Command::new("pacman").arg("-Qi").args(safe).output() {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let stdout1 = String::from_utf8_lossy(&qi1.stdout);
+
+    let mut required_by_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut current_name: Option<String> = None;
+    for line in stdout1.lines() {
+        if let Some(rest) = line.strip_prefix("Name            : ") {
+            current_name = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Required By     : ") {
+            if let Some(ref name) = current_name {
+                let reqs: Vec<String> = rest
+                    .split_whitespace()
+                    .filter(|&p| p != "None")
+                    .filter(|p| !safe_set.contains(&p.to_lowercase()))
+                    .map(|p| p.to_string())
+                    .collect();
+                if !reqs.is_empty() {
+                    required_by_map.insert(name.clone(), reqs);
+                }
+            }
+        }
+    }
+
+    // Collect unique requiring packages (already filtered to non-safe ones above).
+    let requiring_pkgs: Vec<String> = required_by_map
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if requiring_pkgs.is_empty() {
+        return Vec::new();
+    }
+
+    // Step 2: pacman -Qi on requiring packages → find exact-version pins.
+    // Exact pin syntax: `pkg=version` where `=` is NOT preceded by `>` or `<`.
+    let qi2 = match Command::new("pacman").arg("-Qi").args(&requiring_pkgs).output() {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let stdout2 = String::from_utf8_lossy(&qi2.stdout);
+
+    // Map: requiring-package → safe packages it exact-pins.
+    let mut req_exact_pins: HashMap<String, Vec<String>> = HashMap::new();
+    let mut cur_name: Option<String> = None;
+    for line in stdout2.lines() {
+        if let Some(rest) = line.strip_prefix("Name            : ") {
+            cur_name = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Depends On      : ") {
+            if let Some(ref name) = cur_name {
+                let pinned: Vec<String> = rest
+                    .split_whitespace()
+                    .filter_map(|dep| {
+                        let eq = dep.find('=')?;
+                        let before = &dep[..eq];
+                        // Skip >= and <= operators
+                        if before.ends_with('>') || before.ends_with('<') || before.is_empty() {
+                            return None;
+                        }
+                        let pkg = before.to_lowercase();
+                        if safe_set.contains(&pkg) { Some(pkg) } else { None }
+                    })
+                    .collect();
+                if !pinned.is_empty() {
+                    req_exact_pins.insert(name.clone(), pinned);
+                }
+            }
+        }
+    }
+
+    if req_exact_pins.is_empty() {
+        return Vec::new();
+    }
+
+    // For each safe package, collect requiring packages that exact-pin it.
+    let mut warnings: Vec<ReverseDepWarning> = Vec::new();
+    for &pkg in safe {
+        let pkg_lower = pkg.to_lowercase();
+        let broken_by: Vec<String> = req_exact_pins
+            .iter()
+            .filter(|(_, pins)| pins.contains(&pkg_lower))
+            .map(|(requirer, _)| requirer.clone())
+            .collect();
+        if !broken_by.is_empty() {
+            warnings.push(ReverseDepWarning { updated_pkg: pkg.to_string(), broken_by });
+        }
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

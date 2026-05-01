@@ -275,16 +275,30 @@ pub const KDE_ECOSYSTEM_PATTERNS: &[&str] = &[
 
 /// Shared glob matcher used by both classify and ecosystem detection.
 ///
-/// `"foo*"` → name starts with "foo"
-/// `"*foo"` → name ends with "foo"
-/// `"foo"`  → exact match
+/// `"foo*"`     → name starts with "foo"
+/// `"*foo"`     → name ends with "foo"
+/// `"foo*bar"`  → name starts with "foo" and ends with "bar" (non-overlapping)
+/// `"foo"`      → exact match
 pub fn glob_match(name: &str, pattern: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        name.starts_with(prefix)
-    } else if let Some(suffix) = pattern.strip_prefix('*') {
-        name.ends_with(suffix)
-    } else {
-        name == pattern
+    match pattern.find('*') {
+        None => name == pattern,
+        Some(star) => {
+            let prefix = &pattern[..star];
+            let rest   = &pattern[star + 1..];
+            if let Some(inner_star) = rest.find('*') {
+                // More than one wildcard: only check the outer prefix/suffix.
+                let suffix = &rest[inner_star + 1..];
+                name.starts_with(prefix) && name.ends_with(suffix)
+            } else if rest.is_empty() {
+                name.starts_with(prefix)
+            } else if prefix.is_empty() {
+                name.ends_with(rest)
+            } else {
+                name.starts_with(prefix)
+                    && name.ends_with(rest)
+                    && name.len() >= prefix.len() + rest.len()
+            }
+        }
     }
 }
 

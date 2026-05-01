@@ -390,6 +390,50 @@ fn main() -> Result<()> {
     //
     // Libraries where ALL reverse-deps DO have pending updates are advisory-only:
     // a full upgrade will resolve them, so we warn but don't block.
+
+    // Block packages that are exact-version-pinned by an installed package not
+    // being updated this run.  This check must run AFTER all other demotions so
+    // that the current safe set reflects reality.  pacman enforces exact-version
+    // constraints (`pkg=X`) strictly and aborts the transaction if violated.
+    {
+        let final_safe_names: Vec<&str> = safe.iter().map(|u| u.name.as_str()).collect();
+        let final_safe_set: HashSet<String> =
+            safe.iter().map(|u| u.name.to_lowercase()).collect();
+        let exact_pin_warnings =
+            depcheck::check_exact_version_pins(&final_safe_names, &final_safe_set);
+
+        let mut i = 0;
+        while i < safe.len() {
+            if let Some(w) = exact_pin_warnings
+                .iter()
+                .find(|w| w.updated_pkg.eq_ignore_ascii_case(&safe[i].name))
+            {
+                let update = safe.remove(i);
+                let pinned_by = w.broken_by.clone();
+                if verbose && !cli.json {
+                    println!(
+                        "  {} {:<35} {} → {}",
+                        "SKIP".yellow().bold(),
+                        update.name.yellow(),
+                        update.old_version.dimmed(),
+                        update.new_version.dimmed(),
+                    );
+                    println!(
+                        "       {}",
+                        format!(
+                            "(exact version pinned by skipped: {})",
+                            pinned_by.join(", ")
+                        )
+                        .dimmed()
+                    );
+                }
+                skipped.push((update, SkipReason::ExactVersionPin { pinned_by }));
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     let all_pending_names: HashSet<String> = pending.all.iter()
         .map(|u| u.name.to_lowercase())
         .collect();
@@ -473,6 +517,10 @@ fn main() -> Result<()> {
         .iter()
         .filter(|(_, r)| matches!(r, SkipReason::SonameBump { .. }))
         .count();
+    let n_pin = skipped
+        .iter()
+        .filter(|(_, r)| matches!(r, SkipReason::ExactVersionPin { .. }))
+        .count();
 
     println!();
     let bar = "─".repeat(62);
@@ -484,7 +532,9 @@ fn main() -> Result<()> {
     if n_gfx   > 0 { parts.push(format!("graphics: {}", n_gfx));  }
     if n_kde   > 0 { parts.push(format!("kde: {}",      n_kde));   }
     if n_usr   > 0 { parts.push(format!("user: {}",     n_usr));   }
-    if n_partial > 0 { parts.push(format!("partial: {}", n_partial)); }    if n_soname  > 0 { parts.push(format!("soname: {}" , n_soname));  }    let skipped_detail = if parts.is_empty() {
+    if n_partial > 0 { parts.push(format!("partial: {}", n_partial)); }
+    if n_soname  > 0 { parts.push(format!("soname: {}" , n_soname));  }
+    if n_pin     > 0 { parts.push(format!("pinned: {}",  n_pin));     }    let skipped_detail = if parts.is_empty() {
         String::new()
     } else {
         format!("({})", parts.join("  "))
@@ -717,6 +767,7 @@ fn print_skipped_grouped(skipped: &[(&updates::PackageUpdate, SkipReason)]) {
         Group { label: "user",     names: Vec::new() },
         Group { label: "partial",  names: Vec::new() },
         Group { label: "soname",   names: Vec::new() },
+        Group { label: "pinned",   names: Vec::new() },
     ];
 
     for (u, reason) in skipped {
@@ -729,6 +780,7 @@ fn print_skipped_grouped(skipped: &[(&updates::PackageUpdate, SkipReason)]) {
             SkipReason::UserFilter(_)           => 3,
             SkipReason::PartialUpgrade { .. }   => 4,
             SkipReason::SonameBump { .. }       => 5,
+            SkipReason::ExactVersionPin { .. }  => 6,
         };
         groups[idx].names.push(u.name.clone());
     }
